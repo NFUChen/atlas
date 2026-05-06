@@ -2252,3 +2252,79 @@ schema "public" {
 	require.Equal(t, &IndexInclude{Columns: []*schema.Column{s.Tables[0].Columns[1]}}, u3.Attrs[0])
 	require.Equal(t, UniqueConstraint("u3"), u3.Attrs[1].(*Constraint))
 }
+
+func TestMarshalSpec_Extension(t *testing.T) {
+	s := schema.New("public")
+	r := schema.NewRealm(s)
+	r.AddObjects(
+		&Extension{Name: "btree_gist", Schema: s, Version: "1.6"},
+		&Extension{Name: "pgcrypto"},
+	)
+	buf, err := MarshalHCL(r)
+	require.NoError(t, err)
+	require.Equal(t, `extension "btree_gist" {
+  schema  = schema.public
+  version = "1.6"
+}
+extension "pgcrypto" {
+}
+schema "public" {
+}
+`, string(buf))
+}
+
+func TestUnmarshalSpec_Extension(t *testing.T) {
+	f := `
+schema "public" {
+}
+extension "btree_gist" {
+  schema  = schema.public
+  version = "1.6"
+  comment = "gist index support"
+}
+extension "pgcrypto" {
+  schema  = schema.public
+}
+`
+	var r schema.Realm
+	err := EvalHCLBytes([]byte(f), &r, nil)
+	require.NoError(t, err)
+	require.Len(t, r.Schemas, 1)
+	require.Len(t, r.Objects, 2)
+
+	e1, ok := r.Objects[0].(*Extension)
+	require.True(t, ok)
+	require.Equal(t, "btree_gist", e1.Name)
+	require.Equal(t, "public", e1.Schema.Name)
+	require.Equal(t, "1.6", e1.Version)
+	require.Equal(t, "gist index support", e1.Comment)
+
+	e2, ok := r.Objects[1].(*Extension)
+	require.True(t, ok)
+	require.Equal(t, "pgcrypto", e2.Name)
+	require.Equal(t, "public", e2.Schema.Name)
+	require.Empty(t, e2.Version)
+	require.Empty(t, e2.Comment)
+}
+
+func TestExtension_RoundTrip(t *testing.T) {
+	s := schema.New("public")
+	r := schema.NewRealm(s)
+	r.AddObjects(
+		&Extension{Name: "btree_gist", Schema: s, Version: "1.6", Comment: "gist index support"},
+	)
+	buf, err := MarshalHCL(r)
+	require.NoError(t, err)
+
+	var r2 schema.Realm
+	err = EvalHCLBytes(buf, &r2, nil)
+	require.NoError(t, err)
+	require.Len(t, r2.Objects, 1)
+
+	e, ok := r2.Objects[0].(*Extension)
+	require.True(t, ok)
+	require.Equal(t, "btree_gist", e.Name)
+	require.Equal(t, "public", e.Schema.Name)
+	require.Equal(t, "1.6", e.Version)
+	require.Equal(t, "gist index support", e.Comment)
+}

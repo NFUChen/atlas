@@ -623,6 +623,26 @@ func (s *state) alterTableAttr(*sqlx.Builder, *schema.ModifyAttr) {
 }
 
 
+// Extension represents a PostgreSQL extension installed at the database (realm) level.
+type Extension struct {
+	schema.Object
+	Name    string
+	Schema  *schema.Schema
+	Version string
+	Comment string
+}
+
+func (s *state) createDropExtension(e *Extension) (string, string) {
+	b := s.Build("CREATE EXTENSION IF NOT EXISTS").Ident(e.Name)
+	if e.Schema != nil {
+		b.P("SCHEMA").Ident(e.Schema.Name)
+	}
+	if e.Version != "" {
+		b.P("VERSION").P(quote(e.Version))
+	}
+	return b.String(), s.Build("DROP EXTENSION IF EXISTS").Ident(e.Name).String()
+}
+
 func (s *state) addObject(add *schema.AddObject) error {
 	switch o := add.O.(type) {
 	case *schema.EnumType:
@@ -632,6 +652,14 @@ func (s *state) addObject(add *schema.AddObject) error {
 			Cmd:     create,
 			Reverse: drop,
 			Comment: fmt.Sprintf("create enum type %q", o.T),
+		})
+	case *Extension:
+		create, drop := s.createDropExtension(o)
+		s.append(&migrate.Change{
+			Source:  add,
+			Cmd:     create,
+			Reverse: drop,
+			Comment: fmt.Sprintf("create extension %q", o.Name),
 		})
 	default:
 		// unsupported object type.
@@ -649,6 +677,14 @@ func (s *state) dropObject(drop *schema.DropObject) error {
 			Reverse: create,
 			Comment: fmt.Sprintf("drop enum type %q", o.T),
 		})
+	case *Extension:
+		create, dropE := s.createDropExtension(o)
+		s.append(&migrate.Change{
+			Source:  drop,
+			Cmd:     dropE,
+			Reverse: create,
+			Comment: fmt.Sprintf("drop extension %q", o.Name),
+		})
 	default:
 		// unsupported object type.
 	}
@@ -659,14 +695,65 @@ func (s *state) modifyObject(modify *schema.ModifyObject) error {
 	if _, ok := modify.From.(*schema.EnumType); ok {
 		return s.alterEnum(modify)
 	}
+	if _, ok := modify.From.(*Extension); ok {
+		return s.alterExtension(modify)
+	}
 	return nil // unimplemented.
 }
 
+func (s *state) alterExtension(modify *schema.ModifyObject) error {
+	from, ok1 := modify.From.(*Extension)
+	to, ok2 := modify.To.(*Extension)
+	if !ok1 || !ok2 {
+		return fmt.Errorf("altering objects (%T) to (%T) is not supported", modify.From, modify.To)
+	}
+	if to.Version != "" && to.Version != from.Version {
+		s.append(&migrate.Change{
+			Source:  modify,
+			Cmd:     s.Build("ALTER EXTENSION").Ident(from.Name).P("UPDATE TO").P(quote(to.Version)).String(),
+			Comment: fmt.Sprintf("update extension %q version to %q", from.Name, to.Version),
+		})
+	}
+	return nil
+}
 
 // RealmObjectDiff returns a changeset for migrating realm (database) objects
 // from one state to the other. For example, adding extensions or users.
-func (*diff) RealmObjectDiff(_, _ *schema.Realm) ([]schema.Change, error) {
-	return nil, nil // unimplemented.
+func (*diff) RealmObjectDiff(from, to *schema.Realm) ([]schema.Change, error) {
+	var changes []schema.Change
+	// Drop or modify extensions.
+	for _, o1 := range from.Objects {
+		e1, ok := o1.(*Extension)
+		if !ok {
+			continue // Unsupported object type.
+		}
+		o2, ok := to.Object(func(o schema.Object) bool {
+			e2, ok := o.(*Extension)
+			return ok && e1.Name == e2.Name
+		})
+		if !ok {
+			changes = append(changes, &schema.DropObject{O: o1})
+			continue
+		}
+		e2 := o2.(*Extension)
+		if e1.Version != e2.Version {
+			changes = append(changes, &schema.ModifyObject{From: e1, To: e2})
+		}
+	}
+	// Add new extensions.
+	for _, o1 := range to.Objects {
+		e1, ok := o1.(*Extension)
+		if !ok {
+			continue // Unsupported object type.
+		}
+		if _, ok := from.Object(func(o schema.Object) bool {
+			e2, ok := o.(*Extension)
+			return ok && e1.Name == e2.Name
+		}); !ok {
+			changes = append(changes, &schema.AddObject{O: e1})
+		}
+	}
+	return changes, nil
 }
 
 // SchemaObjectDiff returns a changeset for migrating schema objects from
@@ -735,9 +822,39 @@ func convertPolicies(_ []*sqlspec.Table, ps []*policy, _ *schema.Realm) error {
 	return nil
 }
 
-func convertExtensions(exs []*extension, _ *schema.Realm) error {
-	if len(exs) > 0 {
-		return fmt.Errorf("postgres: extensions are not supported by this version. Use: https://atlasgo.io/getting-started")
+func convertExtensions(exs []*extension, r *schema.Realm) error {
+	for _, ex := range exs {
+		ext := &Extension{Name: ex.Name}
+		if a, ok := ex.Attr("schema"); ok {
+			ref, ok := a.V.EncapsulatedValue().(*schemahcl.Ref)
+			if !ok {
+				return fmt.Errorf("postgres: expected schema reference for extension %q", ex.Name)
+			}
+			ns, err := specutil.SchemaName(ref)
+			if err != nil {
+				return err
+			}
+			s, ok := r.Schema(ns)
+			if !ok {
+				return fmt.Errorf("postgres: schema %q defined on extension %q was not found in realm", ns, ex.Name)
+			}
+			ext.Schema = s
+		}
+		if a, ok := ex.Attr("version"); ok {
+			v, err := a.String()
+			if err != nil {
+				return fmt.Errorf("postgres: reading version for extension %q: %w", ex.Name, err)
+			}
+			ext.Version = v
+		}
+		if a, ok := ex.Attr("comment"); ok {
+			c, err := a.String()
+			if err != nil {
+				return fmt.Errorf("postgres: reading comment for extension %q: %w", ex.Name, err)
+			}
+			ext.Comment = c
+		}
+		r.Objects = append(r.Objects, ext)
 	}
 	return nil
 }
@@ -762,6 +879,26 @@ func objectSpec(d *doc, spec *specutil.SchemaSpec, s *schema.Schema) error {
 				Values: e.Values,
 				Schema: specutil.SchemaRef(spec.Schema.Name),
 			})
+		}
+	}
+	return nil
+}
+
+// realmObjectSpec converts realm-level objects (like extensions) into specs.
+func realmObjectSpec(d *doc, r *schema.Realm) error {
+	for _, o := range r.Objects {
+		if e, ok := o.(*Extension); ok {
+			ex := &extension{Name: e.Name}
+			if e.Schema != nil {
+				ex.Extra.Attrs = append(ex.Extra.Attrs, schemahcl.RefAttr("schema", specutil.SchemaRef(e.Schema.Name)))
+			}
+			if e.Version != "" {
+				ex.Extra.Attrs = append(ex.Extra.Attrs, schemahcl.StringAttr("version", e.Version))
+			}
+			if e.Comment != "" {
+				ex.Extra.Attrs = append(ex.Extra.Attrs, schemahcl.StringAttr("comment", e.Comment))
+			}
+			d.Extensions = append(d.Extensions, ex)
 		}
 	}
 	return nil

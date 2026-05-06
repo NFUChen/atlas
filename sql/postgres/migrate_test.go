@@ -2000,3 +2000,51 @@ func TestIndentedPlan(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanChanges_Extension(t *testing.T) {
+	t.Run("AddExtensionFull", func(t *testing.T) {
+		s := schema.New("public")
+		ext := &Extension{Name: "btree_gist", Schema: s, Version: "1.6"}
+		plan, err := DefaultPlan.PlanChanges(context.Background(), "add_ext", []schema.Change{
+			&schema.AddObject{O: ext},
+		})
+		require.NoError(t, err)
+		require.Len(t, plan.Changes, 1)
+		require.Equal(t, `CREATE EXTENSION IF NOT EXISTS "btree_gist" SCHEMA "public" VERSION '1.6'`, plan.Changes[0].Cmd)
+		require.Equal(t, `DROP EXTENSION IF EXISTS "btree_gist"`, plan.Changes[0].Reverse)
+	})
+
+	t.Run("AddExtensionMinimal", func(t *testing.T) {
+		ext := &Extension{Name: "pgcrypto"}
+		plan, err := DefaultPlan.PlanChanges(context.Background(), "add_ext", []schema.Change{
+			&schema.AddObject{O: ext},
+		})
+		require.NoError(t, err)
+		require.Len(t, plan.Changes, 1)
+		require.Equal(t, `CREATE EXTENSION IF NOT EXISTS "pgcrypto"`, plan.Changes[0].Cmd)
+		require.Equal(t, `DROP EXTENSION IF EXISTS "pgcrypto"`, plan.Changes[0].Reverse)
+	})
+
+	t.Run("DropExtension", func(t *testing.T) {
+		s := schema.New("public")
+		ext := &Extension{Name: "btree_gist", Schema: s, Version: "1.6"}
+		plan, err := DefaultPlan.PlanChanges(context.Background(), "drop_ext", []schema.Change{
+			&schema.DropObject{O: ext},
+		})
+		require.NoError(t, err)
+		require.Len(t, plan.Changes, 1)
+		require.Equal(t, `DROP EXTENSION IF EXISTS "btree_gist"`, plan.Changes[0].Cmd)
+		require.Equal(t, `CREATE EXTENSION IF NOT EXISTS "btree_gist" SCHEMA "public" VERSION '1.6'`, plan.Changes[0].Reverse)
+	})
+
+	t.Run("ModifyExtensionVersion", func(t *testing.T) {
+		e1 := &Extension{Name: "btree_gist", Version: "1.5"}
+		e2 := &Extension{Name: "btree_gist", Version: "1.6"}
+		plan, err := DefaultPlan.PlanChanges(context.Background(), "modify_ext", []schema.Change{
+			&schema.ModifyObject{From: e1, To: e2},
+		})
+		require.NoError(t, err)
+		require.Len(t, plan.Changes, 1)
+		require.Equal(t, `ALTER EXTENSION "btree_gist" UPDATE TO '1.6'`, plan.Changes[0].Cmd)
+	})
+}

@@ -660,3 +660,57 @@ concurrent_index {
 	require.Equal(t, `CREATE INDEX CONCURRENTLY "users_pkey_new" ON "public"."users" ("id")`, plan.Changes[1].Cmd)
 	require.Equal(t, `DROP INDEX CONCURRENTLY "public"."users_pkey_new"`, plan.Changes[1].Reverse)
 }
+
+func TestDiff_RealmObjectDiff_Extensions(t *testing.T) {
+	d := &diff{&conn{}}
+
+	t.Run("AddExtension", func(t *testing.T) {
+		from := schema.NewRealm()
+		ext := &Extension{Name: "btree_gist", Version: "1.6"}
+		to := schema.NewRealm()
+		to.AddObjects(ext)
+		changes, err := d.RealmObjectDiff(from, to)
+		require.NoError(t, err)
+		require.EqualValues(t, []schema.Change{
+			&schema.AddObject{O: ext},
+		}, changes)
+	})
+
+	t.Run("DropExtension", func(t *testing.T) {
+		ext := &Extension{Name: "btree_gist", Version: "1.6"}
+		from := schema.NewRealm()
+		from.AddObjects(ext)
+		to := schema.NewRealm()
+		changes, err := d.RealmObjectDiff(from, to)
+		require.NoError(t, err)
+		require.EqualValues(t, []schema.Change{
+			&schema.DropObject{O: ext},
+		}, changes)
+	})
+
+	t.Run("ModifyExtensionVersion", func(t *testing.T) {
+		e1 := &Extension{Name: "btree_gist", Version: "1.5"}
+		e2 := &Extension{Name: "btree_gist", Version: "1.6"}
+		from := schema.NewRealm()
+		from.AddObjects(e1)
+		to := schema.NewRealm()
+		to.AddObjects(e2)
+		changes, err := d.RealmObjectDiff(from, to)
+		require.NoError(t, err)
+		require.EqualValues(t, []schema.Change{
+			&schema.ModifyObject{From: e1, To: e2},
+		}, changes)
+	})
+
+	t.Run("NoChange", func(t *testing.T) {
+		e1 := &Extension{Name: "btree_gist", Version: "1.6"}
+		e2 := &Extension{Name: "btree_gist", Version: "1.6"}
+		from := schema.NewRealm()
+		from.AddObjects(e1)
+		to := schema.NewRealm()
+		to.AddObjects(e2)
+		changes, err := d.RealmObjectDiff(from, to)
+		require.NoError(t, err)
+		require.Empty(t, changes)
+	})
+}

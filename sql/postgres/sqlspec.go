@@ -317,6 +317,9 @@ func (c *Codec) MarshalSpec(v any) ([]byte, error) {
 		if err := specutil.QualifyReferences(d.Tables, rv); err != nil {
 			return nil, err
 		}
+		if err := realmObjectSpec(&d, rv); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("specutil: failed marshaling spec. %T is not supported", v)
 	}
