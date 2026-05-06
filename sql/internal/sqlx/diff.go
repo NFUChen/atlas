@@ -656,7 +656,8 @@ func CheckDiffMode(from, to *schema.Table, mode schema.DiffMode, compare ...func
 		if len(compare) == 1 && !compare[0](c1, c2) {
 			return false
 		}
-		return c1.Expr == c2.Expr || MayWrap(c1.Expr) == MayWrap(c2.Expr)
+		return c1.Expr == c2.Expr || MayWrap(c1.Expr) == MayWrap(c2.Expr) ||
+			NormalizeCheckExpr(c1.Expr) == NormalizeCheckExpr(c2.Expr)
 	})
 }
 
@@ -750,7 +751,8 @@ func similarCheck(attrs []schema.Attr, c *schema.Check) (*schema.Check, bool) {
 		if check.Name != "" && check.Name == c.Name {
 			byName = check
 		}
-		if check.Expr == c.Expr || MayWrap(check.Expr) == MayWrap(c.Expr) {
+		if check.Expr == c.Expr || MayWrap(check.Expr) == MayWrap(c.Expr) ||
+			NormalizeCheckExpr(check.Expr) == NormalizeCheckExpr(c.Expr) {
 			byExpr = check
 		}
 	}
@@ -821,4 +823,3 @@ func BodyDefChanged(from, to string) bool {
 	}
 	return noident(from) != noident(to)
 }
-

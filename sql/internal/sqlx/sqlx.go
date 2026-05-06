@@ -601,6 +601,106 @@ func DefaultValue(c *schema.Column) (string, bool) {
 	}
 }
 
+// NormalizeCheckExpr normalizes a check constraint expression for comparison.
+// It converts Postgres-style ANY(ARRAY[...]) expressions to equivalent IN (...) form,
+// so that semantically identical constraints are not flagged as changed.
+//
+// For example:
+//
+//	((type)::text = ANY ((ARRAY['A'::character varying, 'B'::character varying])::text[]))
+//
+// is normalized to:
+//
+//	(type IN ('A', 'B'))
+func NormalizeCheckExpr(s string) string {
+	// Match pattern: (col)::text = ANY ((ARRAY['v1'::character varying, ...])::text[])
+	// We look for "= ANY" as the indicator.
+	idx := strings.Index(strings.ToUpper(s), "= ANY")
+	if idx == -1 {
+		return s
+	}
+	// Extract the column part: everything before "= ANY", trimmed.
+	colPart := strings.TrimSpace(s[:idx])
+	// Strip outer parens.
+	colPart = stripOuterParens(colPart)
+	// Strip ::text cast from column.
+	if i := strings.LastIndex(colPart, "::"); i != -1 {
+		colPart = strings.TrimSpace(colPart[:i])
+	}
+	// Strip parens around column name.
+	colPart = stripOuterParens(colPart)
+
+	// Extract the ARRAY part after "= ANY".
+	arrayPart := strings.TrimSpace(s[idx+len("= ANY"):])
+	// Strip outer parens.
+	arrayPart = stripOuterParens(arrayPart)
+	// Strip trailing ::text[].
+	if i := strings.LastIndex(arrayPart, "::"); i != -1 {
+		arrayPart = strings.TrimSpace(arrayPart[:i])
+	}
+	// Strip outer parens again.
+	arrayPart = stripOuterParens(arrayPart)
+	// Strip "ARRAY[" prefix and "]" suffix (case-insensitive).
+	upper := strings.ToUpper(arrayPart)
+	if strings.HasPrefix(upper, "ARRAY[") && strings.HasSuffix(arrayPart, "]") {
+		arrayPart = arrayPart[6 : len(arrayPart)-1]
+	} else {
+		return s // Not the expected pattern.
+	}
+	// Parse individual values, stripping casts.
+	var vals []string
+	for _, v := range splitValues(arrayPart) {
+		v = strings.TrimSpace(v)
+		// Strip ::character varying or other casts.
+		if i := strings.LastIndex(v, "::"); i != -1 {
+			v = strings.TrimSpace(v[:i])
+		}
+		vals = append(vals, v)
+	}
+	return colPart + " IN (" + strings.Join(vals, ", ") + ")"
+}
+
+// stripOuterParens removes one layer of balanced outer parentheses.
+func stripOuterParens(s string) string {
+	s = strings.TrimSpace(s)
+	for len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' && balanced(s[1:len(s)-1]) {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
+	return s
+}
+
+// splitValues splits a comma-separated list, respecting single-quoted strings.
+func splitValues(s string) []string {
+	var result []string
+	var current strings.Builder
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\'' && !inQuote:
+			inQuote = true
+			current.WriteByte(s[i])
+		case s[i] == '\'' && inQuote:
+			current.WriteByte(s[i])
+			// Check for escaped quote ('').
+			if i+1 < len(s) && s[i+1] == '\'' {
+				current.WriteByte(s[i+1])
+				i++
+			} else {
+				inQuote = false
+			}
+		case s[i] == ',' && !inQuote:
+			result = append(result, current.String())
+			current.Reset()
+		default:
+			current.WriteByte(s[i])
+		}
+	}
+	if current.Len() > 0 {
+		result = append(result, current.String())
+	}
+	return result
+}
+
 // MayWrap ensures the given string is wrapped with parentheses.
 // Used by the different drivers to turn strings valid expressions.
 func MayWrap(s string) string {
