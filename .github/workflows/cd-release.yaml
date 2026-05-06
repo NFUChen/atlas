@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -25,8 +27,8 @@ jobs:
             goos: linux
             goarch: arm64
             cc: aarch64-linux-gnu-gcc
-          # macOS builds on native runners (CGO for sqlite3)
-          - runner: macos-13
+          # macOS builds on Apple Silicon runner (clang cross-compiles amd64 natively)
+          - runner: macos-14
             goos: darwin
             goarch: amd64
             cc: ""
