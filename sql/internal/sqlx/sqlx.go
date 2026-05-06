@@ -612,46 +612,96 @@ func DefaultValue(c *schema.Column) (string, bool) {
 // is normalized to:
 //
 //	(type IN ('A', 'B'))
+//
+// NormalizeCheckExpr normalizes a check constraint expression for comparison.
+// It converts Postgres-style ANY(ARRAY[...]) expressions to equivalent IN (...) form,
+// and also normalizes plain IN (...) expressions so that both sides produce
+// the same canonical form: col IN ('v1', 'v2', ...)
+//
+// For example:
+//
+//	((type)::text = ANY ((ARRAY['A'::character varying, 'B'::character varying])::text[]))
+//
+// is normalized to the same form as:
+//
+//	type in ('A', 'B')
+//
+// Both become: type IN ('A', 'B')
 func NormalizeCheckExpr(s string) string {
-	// Match pattern: (col)::text = ANY ((ARRAY['v1'::character varying, ...])::text[])
-	// We look for "= ANY" as the indicator.
-	idx := strings.Index(strings.ToUpper(s), "= ANY")
-	if idx == -1 {
-		return s
+	inner := stripOuterParens(s)
+	upper := strings.ToUpper(inner)
+
+	// Try ANY(ARRAY[...]) form first.
+	if idx := strings.Index(upper, "= ANY"); idx != -1 {
+		return normalizeAnyArray(inner, idx)
 	}
-	// Extract the column part: everything before "= ANY", trimmed.
-	colPart := strings.TrimSpace(s[:idx])
-	// Strip outer parens.
+	// Try plain IN (...) form.
+	if idx := strings.Index(upper, " IN "); idx != -1 {
+		return normalizeIn(inner, idx)
+	}
+	return s
+}
+
+// normalizeAnyArray converts (col)::text = ANY ((ARRAY[...])::text[]) to col IN ('v1', 'v2').
+func normalizeAnyArray(inner string, idx int) string {
+	colPart := strings.TrimSpace(inner[:idx])
 	colPart = stripOuterParens(colPart)
 	// Strip ::text cast from column.
 	if i := strings.LastIndex(colPart, "::"); i != -1 {
 		colPart = strings.TrimSpace(colPart[:i])
 	}
-	// Strip parens around column name.
 	colPart = stripOuterParens(colPart)
 
-	// Extract the ARRAY part after "= ANY".
-	arrayPart := strings.TrimSpace(s[idx+len("= ANY"):])
-	// Strip outer parens.
+	arrayPart := strings.TrimSpace(inner[idx+len("= ANY"):])
 	arrayPart = stripOuterParens(arrayPart)
 	// Strip trailing ::text[].
 	if i := strings.LastIndex(arrayPart, "::"); i != -1 {
 		arrayPart = strings.TrimSpace(arrayPart[:i])
 	}
-	// Strip outer parens again.
-	arrayPart = stripOuterParens(arrayPart)
-	// Strip "ARRAY[" prefix and "]" suffix (case-insensitive).
-	upper := strings.ToUpper(arrayPart)
-	if strings.HasPrefix(upper, "ARRAY[") && strings.HasSuffix(arrayPart, "]") {
+	// Strip outer parens around ARRAY[...]. We use a simple trim here instead of
+	// stripOuterParens because the ARRAY contents contain commas which
+	// cause balanced() to return false (it treats comma as a terminator).
+	arrayPart = strings.TrimSpace(arrayPart)
+	if len(arrayPart) >= 2 && arrayPart[0] == '(' && arrayPart[len(arrayPart)-1] == ')' {
+		arrayPart = strings.TrimSpace(arrayPart[1 : len(arrayPart)-1])
+	}
+	up := strings.ToUpper(arrayPart)
+	if strings.HasPrefix(up, "ARRAY[") && strings.HasSuffix(arrayPart, "]") {
 		arrayPart = arrayPart[6 : len(arrayPart)-1]
 	} else {
-		return s // Not the expected pattern.
+		return inner
 	}
-	// Parse individual values, stripping casts.
 	var vals []string
 	for _, v := range splitValues(arrayPart) {
 		v = strings.TrimSpace(v)
-		// Strip ::character varying or other casts.
+		if i := strings.LastIndex(v, "::"); i != -1 {
+			v = strings.TrimSpace(v[:i])
+		}
+		vals = append(vals, v)
+	}
+	return colPart + " IN (" + strings.Join(vals, ", ") + ")"
+}
+
+// normalizeIn normalizes col IN ('v1', 'v2') to a canonical form with
+// consistent casing and spacing.
+func normalizeIn(inner string, idx int) string {
+	colPart := strings.TrimSpace(inner[:idx])
+	colPart = stripOuterParens(colPart)
+	// Strip ::text cast from column.
+	if i := strings.LastIndex(colPart, "::"); i != -1 {
+		colPart = strings.TrimSpace(colPart[:i])
+	}
+	colPart = stripOuterParens(colPart)
+
+	valsPart := strings.TrimSpace(inner[idx+len(" IN "):])
+	valsPart = strings.TrimSpace(valsPart)
+	// Strip outer parens from the values list.
+	if len(valsPart) >= 2 && valsPart[0] == '(' && valsPart[len(valsPart)-1] == ')' {
+		valsPart = valsPart[1 : len(valsPart)-1]
+	}
+	var vals []string
+	for _, v := range splitValues(valsPart) {
+		v = strings.TrimSpace(v)
 		if i := strings.LastIndex(v, "::"); i != -1 {
 			v = strings.TrimSpace(v[:i])
 		}

@@ -706,7 +706,7 @@ func (i *inspect) addChecks(s *schema.Schema, rows *sql.Rows) error {
 		}
 		ck, ok := names[tc{t: table, n: name}]
 		if !ok {
-			ck = &schema.Check{Name: name, Expr: clause, Attrs: []schema.Attr{&CheckColumns{}}}
+			ck = &schema.Check{Name: name, Expr: sqlx.NormalizeCheckExpr(clause), Attrs: []schema.Attr{&CheckColumns{}}}
 			if noInherit {
 				ck.AddAttrs(&NoInherit{})
 			}

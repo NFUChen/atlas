@@ -155,6 +155,84 @@ func TestMayWrap(t *testing.T) {
 	}
 }
 
+func TestNormalizeCheckExpr(t *testing.T) {
+	tests := []struct {
+		name string
+		from string // Expression from Postgres (ANY(ARRAY[...]) form)
+		to   string // Expression from HCL (IN form)
+	}{
+		{
+			name: "basic ANY ARRAY to IN",
+			from: `((type)::text = ANY ((ARRAY['A'::character varying, 'B'::character varying])::text[]))`,
+			to:   `(type) IN ('A', 'B')`,
+		},
+		{
+			name: "payment_audit_records status check",
+			from: `((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SUCCESS'::character varying, 'FAILED'::character varying])::text[]))`,
+			to:   `(status) IN ('PENDING', 'SUCCESS', 'FAILED')`,
+		},
+		{
+			name: "lowercase in without column parens",
+			from: `((type)::text = ANY ((ARRAY['STRING'::character varying, 'NUMBER'::character varying, 'BOOLEAN'::character varying, 'ARRAY_FLOAT'::character varying, 'ARRAY_STRING'::character varying, 'URI'::character varying, 'EMAIL'::character varying])::text[]))`,
+			to:   `type in ('STRING', 'NUMBER', 'BOOLEAN', 'ARRAY_FLOAT', 'ARRAY_STRING', 'URI', 'EMAIL')`,
+		},
+		{
+			name: "features type check",
+			from: `((type)::text = ANY ((ARRAY['SOFTWARE'::character varying, 'HARDWARE'::character varying, 'HYBRID'::character varying])::text[]))`,
+			to:   `type in ('SOFTWARE', 'HARDWARE', 'HYBRID')`,
+		},
+		{
+			name: "organization_subscriptions status check",
+			from: `((status)::text = ANY ((ARRAY['WAITING_FOR_SUBSCRIPTION_APPROVAL'::character varying, 'WAITING_FOR_DEPLOYMENT_APPROVAL'::character varying, 'DEPLOYMENT_APPROVED'::character varying, 'EXPIRED'::character varying])::text[]))`,
+			to:   `status in ('WAITING_FOR_SUBSCRIPTION_APPROVAL', 'WAITING_FOR_DEPLOYMENT_APPROVAL', 'DEPLOYMENT_APPROVED', 'EXPIRED')`,
+		},
+		{
+			name: "pricing_policies type check",
+			from: `((type)::text = ANY ((ARRAY['REGULAR'::character varying, 'DISCOUNT_PERCENTAGE'::character varying, 'AMOUNT_OFF'::character varying, 'PRICE_OVERRIDE'::character varying])::text[]))`,
+			to:   `type in ('REGULAR', 'DISCOUNT_PERCENTAGE', 'AMOUNT_OFF', 'PRICE_OVERRIDE')`,
+		},
+		{
+			name: "non-ANY expression unchanged",
+			from: `(c1 > 1)`,
+			to:   `(c1 > 1)`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalizedFrom := NormalizeCheckExpr(tt.from)
+			normalizedTo := NormalizeCheckExpr(tt.to)
+			require.Equal(t, normalizedFrom, normalizedTo,
+				"normalized expressions should match:\n  from: %s -> %s\n  to:   %s -> %s",
+				tt.from, normalizedFrom, tt.to, normalizedTo)
+		})
+	}
+}
+
+// TestCheckDiffMode_ANYvsIN verifies that after inspect normalizes ANY(ARRAY[...])
+// to IN (...), the diff correctly sees them as equivalent.
+func TestCheckDiffMode_ANYvsIN(t *testing.T) {
+	from := &schema.Table{
+		Name: "payment_audit_records",
+		Attrs: []schema.Attr{
+			&schema.Check{
+				Name: "payment_audit_records_status_check",
+				Expr: `status IN ('PENDING', 'SUCCESS', 'FAILED')`,
+			},
+		},
+	}
+	to := &schema.Table{
+		Name: "payment_audit_records",
+		Attrs: []schema.Attr{
+			&schema.Check{
+				Name: "payment_audit_records_status_check",
+				Expr: `status IN ('PENDING', 'SUCCESS', 'FAILED')`,
+			},
+		},
+	}
+	changes := CheckDiffMode(from, to, 0)
+	require.Empty(t, changes, "identical normalized check constraints should produce no diff")
+}
+
 func TestExprLastIndex(t *testing.T) {
 	tests := []struct {
 		input   string
