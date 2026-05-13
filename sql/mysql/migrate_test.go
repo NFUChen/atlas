@@ -1412,3 +1412,60 @@ func newMigrate(version string) (migrate.PlanApplier, *mock, error) {
 }
 
 func join(lines ...string) string { return strings.Join(lines, "\n") }
+
+func TestRenameDetection_EndToEnd(t *testing.T) {
+	db, m, err := sqlmock.New()
+	require.NoError(t, err)
+	mock{m}.version("8.0.19")
+	drv, err := Open(db)
+	require.NoError(t, err)
+
+	s := schema.New("public")
+	from := schema.NewTable("users").
+		SetSchema(s).
+		AddColumns(
+			schema.NewIntColumn("id", "int"),
+			schema.NewStringColumn("first_name", "varchar"),
+			schema.NewIntColumn("age", "int"),
+		)
+	to := schema.NewTable("users").
+		SetSchema(s).
+		AddColumns(
+			schema.NewIntColumn("id", "int"),
+			schema.NewStringColumn("given_name", "varchar"),
+			schema.NewIntColumn("age", "int"),
+		)
+
+	// Step 1: SchemaDiff should detect the rename.
+	changes, err := drv.SchemaDiff(
+		schema.New("public").AddTables(from),
+		schema.New("public").AddTables(to),
+	)
+	require.NoError(t, err)
+	require.Len(t, changes, 1)
+	modifyTable, ok := changes[0].(*schema.ModifyTable)
+	require.True(t, ok, "expected ModifyTable, got %T", changes[0])
+	require.Len(t, modifyTable.Changes, 1)
+	rename, ok := modifyTable.Changes[0].(*schema.RenameColumn)
+	require.True(t, ok, "expected RenameColumn, got %T", modifyTable.Changes[0])
+	require.Equal(t, "first_name", rename.From.Name)
+	require.Equal(t, "given_name", rename.To.Name)
+
+	// Step 2: PlanChanges should produce correct SQL.
+	plan, err := drv.PlanChanges(context.Background(), "rename", changes)
+	require.NoError(t, err)
+	require.Len(t, plan.Changes, 1)
+	require.Equal(t, "ALTER TABLE `public`.`users` RENAME COLUMN `first_name` TO `given_name`", plan.Changes[0].Cmd)
+	require.Equal(t, "ALTER TABLE `public`.`users` RENAME COLUMN `given_name` TO `first_name`", plan.Changes[0].Reverse)
+
+	// Step 3: Verify older MySQL version uses CHANGE COLUMN syntax.
+	db5, m5, err := sqlmock.New()
+	require.NoError(t, err)
+	mock{m5}.version("5.6.35")
+	drv5, err := Open(db5)
+	require.NoError(t, err)
+	plan5, err := drv5.PlanChanges(context.Background(), "rename", changes)
+	require.NoError(t, err)
+	require.Len(t, plan5.Changes, 1)
+	require.Equal(t, "ALTER TABLE `public`.`users` CHANGE COLUMN `first_name` `given_name` varchar(0) NOT NULL", plan5.Changes[0].Cmd)
+}
