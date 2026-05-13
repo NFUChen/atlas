@@ -163,33 +163,33 @@ func TestNormalizeCheckExpr(t *testing.T) {
 	}{
 		{
 			name: "basic ANY ARRAY to IN",
-			from: `((type)::text = ANY ((ARRAY['A'::character varying, 'B'::character varying])::text[]))`,
-			to:   `(type) IN ('A', 'B')`,
+			from: `((c1)::text = ANY ((ARRAY['A'::character varying, 'B'::character varying])::text[]))`,
+			to:   `(c1) IN ('A', 'B')`,
 		},
 		{
-			name: "payment_audit_records status check",
-			from: `((status)::text = ANY ((ARRAY['PENDING'::character varying, 'SUCCESS'::character varying, 'FAILED'::character varying])::text[]))`,
-			to:   `(status) IN ('PENDING', 'SUCCESS', 'FAILED')`,
+			name: "three values with parens",
+			from: `((c1)::text = ANY ((ARRAY['V1'::character varying, 'V2'::character varying, 'V3'::character varying])::text[]))`,
+			to:   `(c1) IN ('V1', 'V2', 'V3')`,
 		},
 		{
 			name: "lowercase in without column parens",
-			from: `((type)::text = ANY ((ARRAY['STRING'::character varying, 'NUMBER'::character varying, 'BOOLEAN'::character varying, 'ARRAY_FLOAT'::character varying, 'ARRAY_STRING'::character varying, 'URI'::character varying, 'EMAIL'::character varying])::text[]))`,
-			to:   `type in ('STRING', 'NUMBER', 'BOOLEAN', 'ARRAY_FLOAT', 'ARRAY_STRING', 'URI', 'EMAIL')`,
+			from: `((c1)::text = ANY ((ARRAY['V1'::character varying, 'V2'::character varying, 'V3'::character varying, 'V4'::character varying, 'V5'::character varying, 'V6'::character varying, 'V7'::character varying])::text[]))`,
+			to:   `c1 in ('V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7')`,
 		},
 		{
-			name: "features type check",
-			from: `((type)::text = ANY ((ARRAY['SOFTWARE'::character varying, 'HARDWARE'::character varying, 'HYBRID'::character varying])::text[]))`,
-			to:   `type in ('SOFTWARE', 'HARDWARE', 'HYBRID')`,
+			name: "three values without parens",
+			from: `((c1)::text = ANY ((ARRAY['V1'::character varying, 'V2'::character varying, 'V3'::character varying])::text[]))`,
+			to:   `c1 in ('V1', 'V2', 'V3')`,
 		},
 		{
-			name: "organization_subscriptions status check",
-			from: `((status)::text = ANY ((ARRAY['WAITING_FOR_SUBSCRIPTION_APPROVAL'::character varying, 'WAITING_FOR_DEPLOYMENT_APPROVAL'::character varying, 'DEPLOYMENT_APPROVED'::character varying, 'EXPIRED'::character varying])::text[]))`,
-			to:   `status in ('WAITING_FOR_SUBSCRIPTION_APPROVAL', 'WAITING_FOR_DEPLOYMENT_APPROVAL', 'DEPLOYMENT_APPROVED', 'EXPIRED')`,
+			name: "four values",
+			from: `((c1)::text = ANY ((ARRAY['V1'::character varying, 'V2'::character varying, 'V3'::character varying, 'V4'::character varying])::text[]))`,
+			to:   `c1 in ('V1', 'V2', 'V3', 'V4')`,
 		},
 		{
-			name: "pricing_policies type check",
-			from: `((type)::text = ANY ((ARRAY['REGULAR'::character varying, 'DISCOUNT_PERCENTAGE'::character varying, 'AMOUNT_OFF'::character varying, 'PRICE_OVERRIDE'::character varying])::text[]))`,
-			to:   `type in ('REGULAR', 'DISCOUNT_PERCENTAGE', 'AMOUNT_OFF', 'PRICE_OVERRIDE')`,
+			name: "four underscore values",
+			from: `((c1)::text = ANY ((ARRAY['VAL_ONE'::character varying, 'VAL_TWO'::character varying, 'VAL_THREE'::character varying, 'VAL_FOUR'::character varying])::text[]))`,
+			to:   `c1 in ('VAL_ONE', 'VAL_TWO', 'VAL_THREE', 'VAL_FOUR')`,
 		},
 		{
 			name: "non-ANY expression unchanged",
@@ -212,20 +212,20 @@ func TestNormalizeCheckExpr(t *testing.T) {
 // to IN (...), the diff correctly sees them as equivalent.
 func TestCheckDiffMode_ANYvsIN(t *testing.T) {
 	from := &schema.Table{
-		Name: "payment_audit_records",
+		Name: "t1",
 		Attrs: []schema.Attr{
 			&schema.Check{
-				Name: "payment_audit_records_status_check",
-				Expr: `status IN ('PENDING', 'SUCCESS', 'FAILED')`,
+				Name: "t1_c1_check",
+				Expr: `c1 IN ('V1', 'V2', 'V3')`,
 			},
 		},
 	}
 	to := &schema.Table{
-		Name: "payment_audit_records",
+		Name: "t1",
 		Attrs: []schema.Attr{
 			&schema.Check{
-				Name: "payment_audit_records_status_check",
-				Expr: `status IN ('PENDING', 'SUCCESS', 'FAILED')`,
+				Name: "t1_c1_check",
+				Expr: `c1 IN ('V1', 'V2', 'V3')`,
 			},
 		},
 	}
