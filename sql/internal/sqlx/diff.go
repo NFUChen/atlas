@@ -428,13 +428,31 @@ func (d *Diff) askForColumns(fromT *schema.Table, changes []schema.Change, opts 
 		}
 		if len(available) == 1 {
 			j := available[0]
-			renames = append(renames, &schema.RenameColumn{
-				From: drops[i].C,
-				To:   adds[j].C,
-			})
-			usedDrops[i] = true
-			usedAdds[j] = true
-			continue
+			// Verify no other unconsumed drop also candidates this add.
+			contested := false
+			for ii, cc := range candidates {
+				if ii == i || usedDrops[ii] {
+					continue
+				}
+				for _, jj := range cc {
+					if jj == j {
+						contested = true
+						break
+					}
+				}
+				if contested {
+					break
+				}
+			}
+			if !contested {
+				renames = append(renames, &schema.RenameColumn{
+					From: drops[i].C,
+					To:   adds[j].C,
+				})
+				usedDrops[i] = true
+				usedAdds[j] = true
+				continue
+			}
 		}
 		if opts == nil || opts.AskFunc == nil {
 			continue

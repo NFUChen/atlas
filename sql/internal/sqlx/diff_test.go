@@ -122,3 +122,263 @@ func TestAskForColumns_SingleRename(t *testing.T) {
 	require.Equal(t, "old_name", rename.From.Name)
 	require.Equal(t, "new_name", rename.To.Name)
 }
+
+func TestAskForColumns_TypeMismatch(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropCol := schema.NewIntColumn("a", "int")
+	addCol := schema.NewStringColumn("b", "varchar")
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropCol},
+		&schema.AddColumn{C: addCol},
+	}
+	got, err := d.askForColumns(tbl, changes, &schema.DiffOptions{})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.IsType(t, &schema.DropColumn{}, got[0])
+	require.IsType(t, &schema.AddColumn{}, got[1])
+}
+
+func TestAskForColumns_NullableDiffers(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropCol := schema.NewIntColumn("a", "int")
+	addCol := schema.NewNullIntColumn("b", "int")
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropCol},
+		&schema.AddColumn{C: addCol},
+	}
+	got, err := d.askForColumns(tbl, changes, &schema.DiffOptions{})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.IsType(t, &schema.DropColumn{}, got[0])
+	require.IsType(t, &schema.AddColumn{}, got[1])
+}
+
+func TestAskForColumns_DefaultDiffers(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropCol := schema.NewIntColumn("a", "int").SetDefault(&schema.Literal{V: "0"})
+	addCol := schema.NewIntColumn("b", "int").SetDefault(&schema.Literal{V: "1"})
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropCol},
+		&schema.AddColumn{C: addCol},
+	}
+	got, err := d.askForColumns(tbl, changes, &schema.DiffOptions{})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.IsType(t, &schema.DropColumn{}, got[0])
+	require.IsType(t, &schema.AddColumn{}, got[1])
+}
+
+func TestAskForColumns_MultipleIndependentRenames(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropA := schema.NewIntColumn("a", "int")
+	dropC := schema.NewStringColumn("c", "varchar")
+	addB := schema.NewIntColumn("b", "int")
+	addD := schema.NewStringColumn("d", "varchar")
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropA},
+		&schema.DropColumn{C: dropC},
+		&schema.AddColumn{C: addB},
+		&schema.AddColumn{C: addD},
+	}
+	got, err := d.askForColumns(tbl, changes, &schema.DiffOptions{})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	rename1, ok := got[0].(*schema.RenameColumn)
+	require.True(t, ok)
+	rename2, ok := got[1].(*schema.RenameColumn)
+	require.True(t, ok)
+	require.Equal(t, "a", rename1.From.Name)
+	require.Equal(t, "b", rename1.To.Name)
+	require.Equal(t, "c", rename2.From.Name)
+	require.Equal(t, "d", rename2.To.Name)
+}
+
+func TestAskForColumns_NoDrops(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	changes := []schema.Change{
+		&schema.AddColumn{C: schema.NewIntColumn("a", "int")},
+		&schema.AddColumn{C: schema.NewIntColumn("b", "int")},
+	}
+	got, err := d.askForColumns(tbl, changes, &schema.DiffOptions{})
+	require.NoError(t, err)
+	require.Equal(t, changes, got)
+}
+
+func TestAskForColumns_NoAdds(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	changes := []schema.Change{
+		&schema.DropColumn{C: schema.NewIntColumn("a", "int")},
+		&schema.DropColumn{C: schema.NewIntColumn("b", "int")},
+	}
+	got, err := d.askForColumns(tbl, changes, &schema.DiffOptions{})
+	require.NoError(t, err)
+	require.Equal(t, changes, got)
+}
+
+func TestAskForColumns_MixedChangesPreserved(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	modifyFrom := schema.NewIntColumn("x", "int")
+	modifyTo := schema.NewIntColumn("x", "bigint")
+	dropCol := schema.NewStringColumn("a", "varchar")
+	addCol := schema.NewStringColumn("b", "varchar")
+	changes := []schema.Change{
+		&schema.ModifyColumn{From: modifyFrom, To: modifyTo, Change: schema.ChangeType},
+		&schema.DropColumn{C: dropCol},
+		&schema.AddColumn{C: addCol},
+	}
+	got, err := d.askForColumns(tbl, changes, &schema.DiffOptions{})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.IsType(t, &schema.ModifyColumn{}, got[0])
+	rename, ok := got[1].(*schema.RenameColumn)
+	require.True(t, ok)
+	require.Equal(t, "a", rename.From.Name)
+	require.Equal(t, "b", rename.To.Name)
+}
+
+func TestAskForColumns_AmbiguousAskFuncSelects(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropCol := schema.NewIntColumn("a", "int")
+	addB := schema.NewIntColumn("b", "int")
+	addC := schema.NewIntColumn("c", "int")
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropCol},
+		&schema.AddColumn{C: addB},
+		&schema.AddColumn{C: addC},
+	}
+	opts := &schema.DiffOptions{
+		AskFunc: func(question string, options []string) (string, error) {
+			require.Contains(t, question, `"a"`)
+			require.Contains(t, options, "b")
+			require.Contains(t, options, "c")
+			require.Contains(t, options, "(none)")
+			return "b", nil
+		},
+	}
+	got, err := d.askForColumns(tbl, changes, opts)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	rename, ok := got[0].(*schema.RenameColumn)
+	require.True(t, ok)
+	require.Equal(t, "a", rename.From.Name)
+	require.Equal(t, "b", rename.To.Name)
+	require.IsType(t, &schema.AddColumn{}, got[1])
+	require.Equal(t, "c", got[1].(*schema.AddColumn).C.Name)
+}
+
+func TestAskForColumns_AmbiguousNoAskFunc(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropCol := schema.NewIntColumn("a", "int")
+	addB := schema.NewIntColumn("b", "int")
+	addC := schema.NewIntColumn("c", "int")
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropCol},
+		&schema.AddColumn{C: addB},
+		&schema.AddColumn{C: addC},
+	}
+	got, err := d.askForColumns(tbl, changes, &schema.DiffOptions{})
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	require.IsType(t, &schema.DropColumn{}, got[0])
+	require.IsType(t, &schema.AddColumn{}, got[1])
+	require.IsType(t, &schema.AddColumn{}, got[2])
+}
+
+func TestAskForColumns_AmbiguousAskFuncNone(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropCol := schema.NewIntColumn("a", "int")
+	addB := schema.NewIntColumn("b", "int")
+	addC := schema.NewIntColumn("c", "int")
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropCol},
+		&schema.AddColumn{C: addB},
+		&schema.AddColumn{C: addC},
+	}
+	opts := &schema.DiffOptions{
+		AskFunc: func(string, []string) (string, error) {
+			return "(none)", nil
+		},
+	}
+	got, err := d.askForColumns(tbl, changes, opts)
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	require.IsType(t, &schema.DropColumn{}, got[0])
+	require.IsType(t, &schema.AddColumn{}, got[1])
+	require.IsType(t, &schema.AddColumn{}, got[2])
+}
+
+func TestAskForColumns_AskFuncError(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropCol := schema.NewIntColumn("a", "int")
+	addB := schema.NewIntColumn("b", "int")
+	addC := schema.NewIntColumn("c", "int")
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropCol},
+		&schema.AddColumn{C: addB},
+		&schema.AddColumn{C: addC},
+	}
+	opts := &schema.DiffOptions{
+		AskFunc: func(string, []string) (string, error) {
+			return "", fmt.Errorf("user cancelled")
+		},
+	}
+	_, err := d.askForColumns(tbl, changes, opts)
+	require.EqualError(t, err, "user cancelled")
+}
+
+func TestAskForColumns_ReverseAmbiguousAskFunc(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropA := schema.NewIntColumn("a", "int")
+	dropB := schema.NewIntColumn("b", "int")
+	addC := schema.NewIntColumn("c", "int")
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropA},
+		&schema.DropColumn{C: dropB},
+		&schema.AddColumn{C: addC},
+	}
+	opts := &schema.DiffOptions{
+		AskFunc: func(question string, options []string) (string, error) {
+			return "c", nil
+		},
+	}
+	got, err := d.askForColumns(tbl, changes, opts)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.IsType(t, &schema.DropColumn{}, got[0])
+	require.Equal(t, "b", got[0].(*schema.DropColumn).C.Name)
+	rename, ok := got[1].(*schema.RenameColumn)
+	require.True(t, ok)
+	require.Equal(t, "a", rename.From.Name)
+	require.Equal(t, "c", rename.To.Name)
+}
+
+func TestAskForColumns_ReverseAmbiguousNoAskFunc(t *testing.T) {
+	d := newTestDiff()
+	tbl := schema.NewTable("users").SetSchema(schema.New("public"))
+	dropA := schema.NewIntColumn("a", "int")
+	dropB := schema.NewIntColumn("b", "int")
+	addC := schema.NewIntColumn("c", "int")
+	changes := []schema.Change{
+		&schema.DropColumn{C: dropA},
+		&schema.DropColumn{C: dropB},
+		&schema.AddColumn{C: addC},
+	}
+	got, err := d.askForColumns(tbl, changes, &schema.DiffOptions{})
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	require.IsType(t, &schema.DropColumn{}, got[0])
+	require.IsType(t, &schema.DropColumn{}, got[1])
+	require.IsType(t, &schema.AddColumn{}, got[2])
+}
