@@ -831,9 +831,7 @@ func IsUint(s string) bool {
 	return true
 }
 
-func (*Diff) askForColumns(_ *schema.Table, changes []schema.Change, _ *schema.DiffOptions) ([]schema.Change, error) {
-	return changes, nil // unimplemented.
-}
+
 
 func (*Diff) askForIndexes(_ string, changes []schema.Change, _ *schema.DiffOptions) ([]schema.Change, error) {
 	return changes, nil // unimplemented.

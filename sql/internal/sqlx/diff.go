@@ -342,6 +342,159 @@ func (d *Diff) columnDiff(from, to *schema.Table, opts *schema.DiffOptions) ([]s
 	return changes, nil
 }
 
+// askForColumns detects column renames by pairing DropColumn and AddColumn
+// changes whose columns are identical (per ColumnChange) except for name.
+// Unique pairs are auto-converted to RenameColumn. Ambiguous pairs use
+// DiffOptions.AskFunc if available, otherwise fall back to drop+add.
+func (d *Diff) askForColumns(fromT *schema.Table, changes []schema.Change, opts *schema.DiffOptions) ([]schema.Change, error) {
+	var (
+		drops []*schema.DropColumn
+		adds  []*schema.AddColumn
+		rest  []schema.Change
+	)
+	for _, c := range changes {
+		switch c := c.(type) {
+		case *schema.DropColumn:
+			drops = append(drops, c)
+		case *schema.AddColumn:
+			adds = append(adds, c)
+		default:
+			rest = append(rest, c)
+		}
+	}
+	if len(drops) == 0 || len(adds) == 0 {
+		return changes, nil
+	}
+	// Build candidate matrix: candidates[i] holds indices into adds
+	// that are identical to drops[i] (except for name).
+	candidates := make([][]int, len(drops))
+	for i, dc := range drops {
+		for j, ac := range adds {
+			match, err := d.columnsMatch(fromT, dc.C, ac.C, opts)
+			if err != nil {
+				return nil, err
+			}
+			if match {
+				candidates[i] = append(candidates[i], j)
+			}
+		}
+	}
+	var (
+		renames   []schema.Change
+		usedDrops = make(map[int]bool)
+		usedAdds  = make(map[int]bool)
+	)
+	// Pass 1: resolve unique 1:1 matches.
+	for i, cands := range candidates {
+		if len(cands) != 1 {
+			continue
+		}
+		j := cands[0]
+		// Check reverse uniqueness: add[j] must only match drop[i].
+		reverseCount := 0
+		for ii, cc := range candidates {
+			if ii == i {
+				continue
+			}
+			for _, jj := range cc {
+				if jj == j {
+					reverseCount++
+				}
+			}
+		}
+		if reverseCount > 0 {
+			continue
+		}
+		renames = append(renames, &schema.RenameColumn{
+			From: drops[i].C,
+			To:   adds[j].C,
+		})
+		usedDrops[i] = true
+		usedAdds[j] = true
+	}
+	// Pass 2: resolve ambiguous matches via AskFunc.
+	for i, cands := range candidates {
+		if usedDrops[i] || len(cands) == 0 {
+			continue
+		}
+		var available []int
+		for _, j := range cands {
+			if !usedAdds[j] {
+				available = append(available, j)
+			}
+		}
+		if len(available) == 0 {
+			continue
+		}
+		if len(available) == 1 {
+			j := available[0]
+			renames = append(renames, &schema.RenameColumn{
+				From: drops[i].C,
+				To:   adds[j].C,
+			})
+			usedDrops[i] = true
+			usedAdds[j] = true
+			continue
+		}
+		if opts == nil || opts.AskFunc == nil {
+			continue
+		}
+		options := make([]string, 0, len(available)+1)
+		for _, j := range available {
+			options = append(options, adds[j].C.Name)
+		}
+		options = append(options, "(none)")
+		answer, err := opts.AskFunc(
+			fmt.Sprintf("Column %q was removed and columns with identical type were added. Did you mean to rename it?", drops[i].C.Name),
+			options,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if answer == "(none)" {
+			continue
+		}
+		for _, j := range available {
+			if adds[j].C.Name == answer {
+				renames = append(renames, &schema.RenameColumn{
+					From: drops[i].C,
+					To:   adds[j].C,
+				})
+				usedDrops[i] = true
+				usedAdds[j] = true
+				break
+			}
+		}
+	}
+	// Reconstruct: rest + unconsumed drops + renames + unconsumed adds.
+	result := make([]schema.Change, 0, len(changes))
+	result = append(result, rest...)
+	for i, dc := range drops {
+		if !usedDrops[i] {
+			result = append(result, dc)
+		}
+	}
+	result = append(result, renames...)
+	for j, ac := range adds {
+		if !usedAdds[j] {
+			result = append(result, ac)
+		}
+	}
+	return result, nil
+}
+
+// columnsMatch reports whether two columns are identical except for their name.
+func (d *Diff) columnsMatch(fromT *schema.Table, from, to *schema.Column, opts *schema.DiffOptions) (bool, error) {
+	origName := from.Name
+	from.Name = to.Name
+	defer func() { from.Name = origName }()
+	change, err := d.ColumnChange(fromT, from, to, opts)
+	if err != nil {
+		return false, err
+	}
+	return change == NoChange, nil
+}
+
 // pkDiff returns the schema changes (if any) for migrating table
 // primary-key from current state to the desired state.
 func (d *Diff) pkDiff(from, to *schema.Table, opts *schema.DiffOptions) (changes []schema.Change) {
