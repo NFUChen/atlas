@@ -55,7 +55,7 @@ type migrateApplyFlags struct {
 	baselineVersion string // apply with this version as baseline
 	txMode          string // (none, file, all)
 	execOrder       string // (linear, linear-skip, non-linear)
-	context         string // Run context. See cloudapi.DeployContextInput.
+	context         string
 }
 
 func (f *migrateApplyFlags) migrateOptions() ([]migrate.ExecutorOption, error) {
@@ -446,7 +446,7 @@ type migrateLintFlags struct {
 	// Not enabled by default.
 	dirBase string // --base atlas://myapp
 	web     bool   // Open the web browser
-	context string // Run context. See cloudapi.ContextInput.
+	context string
 }
 
 // migrateLintCmd represents the 'atlas migrate lint' subcommand.
