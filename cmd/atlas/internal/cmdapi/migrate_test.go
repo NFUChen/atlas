@@ -1023,6 +1023,89 @@ func TestMigrate_Diff(t *testing.T) {
 		require.Equal(t, "CREATE TABLE `t` (`c` int NULL)", string(files[0].Bytes()))
 	})
 
+	t.Run("DryRun", func(t *testing.T) {
+		t.Run("Basic", func(t *testing.T) {
+			p := t.TempDir()
+			s, err := runCmd(
+				migrateDiffCmd(),
+				"name",
+				"--dry-run",
+				"--dir", "file://"+p,
+				"--dev-url", openSQLite(t, ""),
+				"--to", to,
+			)
+			require.NoError(t, err)
+			require.Contains(t, s, "CREATE TABLE")
+			// Verify no files were written to the directory.
+			files, err := os.ReadDir(p)
+			require.NoError(t, err)
+			require.Empty(t, files)
+		})
+
+		t.Run("NoChanges", func(t *testing.T) {
+			p := t.TempDir()
+			// First, create a migration so the dir state matches the desired state.
+			_, err := runCmd(
+				migrateDiffCmd(),
+				"init",
+				"--dir", "file://"+p,
+				"--dev-url", openSQLite(t, ""),
+				"--to", to,
+			)
+			require.NoError(t, err)
+			// Dry-run with no diff should succeed and not write new files.
+			s, err := runCmd(
+				migrateDiffCmd(),
+				"noop",
+				"--dry-run",
+				"--dir", "file://"+p,
+				"--dev-url", openSQLite(t, ""),
+				"--to", to,
+			)
+			require.NoError(t, err)
+			require.Contains(t, s, "synced")
+			// Only the first migration and atlas.sum should exist.
+			entries, err := os.ReadDir(p)
+			require.NoError(t, err)
+			require.Len(t, entries, 2)
+		})
+
+		t.Run("WithFormat", func(t *testing.T) {
+			p := t.TempDir()
+			s, err := runCmd(
+				migrateDiffCmd(),
+				"name",
+				"--dry-run",
+				"--dir", "file://"+p,
+				"--dev-url", openSQLite(t, ""),
+				"--to", to,
+				"--format", `{{ range .Changes }}{{ .Cmd }}{{ end }}`,
+			)
+			require.NoError(t, err)
+			require.Contains(t, s, "CREATE TABLE")
+			// Still no files written.
+			files, err := os.ReadDir(p)
+			require.NoError(t, err)
+			require.Empty(t, files)
+		})
+
+		t.Run("MutuallyExclusiveWithEdit", func(t *testing.T) {
+			p := t.TempDir()
+			_, err := runCmd(
+				migrateDiffCmd(),
+				"name",
+				"--dry-run",
+				"--edit",
+				"--dir", "file://"+p,
+				"--dev-url", openSQLite(t, ""),
+				"--to", to,
+			)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "dry-run")
+			require.Contains(t, err.Error(), "edit")
+		})
+	})
+
 	t.Run("ProjectFile", func(t *testing.T) {
 		p := t.TempDir()
 		h := `
@@ -1796,4 +1879,246 @@ func sed(t *testing.T, r, p string) {
 
 func lines(f migrate.File) []string {
 	return strings.Split(strings.TrimSpace(string(f.Bytes())), "\n")
+}
+
+func TestMigrate_Rm(t *testing.T) {
+	t.Run("Basic", func(t *testing.T) {
+		p := t.TempDir()
+		to := hclURL(t)
+
+		// Create a migration file.
+		_, err := runCmd(
+			migrateDiffCmd(),
+			"first",
+			"--dir", "file://"+p,
+			"--dev-url", openSQLite(t, ""),
+			"--to", to,
+		)
+		require.NoError(t, err)
+
+		// Get the version prefix from the created file.
+		d, err := migrate.NewLocalDir(p)
+		require.NoError(t, err)
+		files, err := d.Files()
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		version := strings.SplitN(files[0].Name(), "_", 2)[0]
+
+		// Remove the migration file by version.
+		s, err := runCmd(migrateRmCmd(), version, "--dir", "file://"+p)
+		require.NoError(t, err)
+		require.Contains(t, s, "Removed:")
+
+		// Verify the file was removed and only atlas.sum remains.
+		entries, err := os.ReadDir(p)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		require.Equal(t, "atlas.sum", entries[0].Name())
+	})
+
+	t.Run("NonExistentVersion", func(t *testing.T) {
+		p := t.TempDir()
+		to := hclURL(t)
+		// Create a file so the dir is valid.
+		_, err := runCmd(
+			migrateDiffCmd(), "first",
+			"--dir", "file://"+p,
+			"--dev-url", openSQLite(t, ""),
+			"--to", to,
+		)
+		require.NoError(t, err)
+
+		_, err = runCmd(migrateRmCmd(), "99999999999999", "--dir", "file://"+p)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no migration file found")
+	})
+
+	t.Run("RequiresVersionArg", func(t *testing.T) {
+		p := t.TempDir()
+		_, err := runCmd(migrateRmCmd(), "--dir", "file://"+p)
+		require.Error(t, err)
+	})
+
+	t.Run("SumValidAfterRemoval", func(t *testing.T) {
+		p := t.TempDir()
+		to := hclURL(t)
+
+		// Create a migration.
+		_, err := runCmd(
+			migrateDiffCmd(), "first",
+			"--dir", "file://"+p,
+			"--dev-url", openSQLite(t, ""),
+			"--to", to,
+		)
+		require.NoError(t, err)
+
+		d, err := migrate.NewLocalDir(p)
+		require.NoError(t, err)
+		files, err := d.Files()
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		version := strings.SplitN(files[0].Name(), "_", 2)[0]
+
+		// Remove and verify the sum is still valid.
+		_, err = runCmd(migrateRmCmd(), version, "--dir", "file://"+p)
+		require.NoError(t, err)
+		_, err = runCmd(migrateValidateCmd(), "--dir", "file://"+p)
+		require.NoError(t, err)
+	})
+
+	t.Run("RemoveFromMultiple", func(t *testing.T) {
+		p := t.TempDir()
+
+		// Manually create two migration files.
+		require.NoError(t, os.WriteFile(filepath.Join(p, "20240101000000_first.sql"), []byte("CREATE TABLE a (id int);\n"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(p, "20240102000000_second.sql"), []byte("CREATE TABLE b (id int);\n"), 0644))
+		// Create initial sum.
+		d, err := migrate.NewLocalDir(p)
+		require.NoError(t, err)
+		sum, err := d.Checksum()
+		require.NoError(t, err)
+		require.NoError(t, migrate.WriteSumFile(d, sum))
+
+		// Remove first, second should remain.
+		s, err := runCmd(migrateRmCmd(), "20240101000000", "--dir", "file://"+p)
+		require.NoError(t, err)
+		require.Contains(t, s, "20240101000000_first.sql")
+
+		files, err := d.Files()
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		require.Equal(t, "20240102000000_second.sql", files[0].Name())
+
+		// Sum should be valid.
+		_, err = runCmd(migrateValidateCmd(), "--dir", "file://"+p)
+		require.NoError(t, err)
+	})
+}
+
+func TestMigrate_Edit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	t.Run("Basic", func(t *testing.T) {
+		p := t.TempDir()
+		to := hclURL(t)
+
+		// Create a migration file.
+		_, err := runCmd(
+			migrateDiffCmd(), "first",
+			"--dir", "file://"+p,
+			"--dev-url", openSQLite(t, ""),
+			"--to", to,
+		)
+		require.NoError(t, err)
+
+		d, err := migrate.NewLocalDir(p)
+		require.NoError(t, err)
+		files, err := d.Files()
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		version := strings.SplitN(files[0].Name(), "_", 2)[0]
+		origContent := string(files[0].Bytes())
+
+		// Edit the migration file.
+		t.Setenv("EDITOR", "echo '-- edited by test' >>")
+		_, err = runCmd(migrateEditCmd(), version, "--dir", "file://"+p)
+		require.NoError(t, err)
+
+		// Verify the file was modified.
+		files, err = d.Files()
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		newContent := string(files[0].Bytes())
+		require.Contains(t, newContent, origContent)
+		require.Contains(t, newContent, "-- edited by test")
+
+		// Verify atlas.sum was updated (no validation error).
+		_, err = runCmd(migrateValidateCmd(), "--dir", "file://"+p)
+		require.NoError(t, err)
+	})
+
+	t.Run("NonExistentVersion", func(t *testing.T) {
+		p := t.TempDir()
+		to := hclURL(t)
+		_, err := runCmd(
+			migrateDiffCmd(), "first",
+			"--dir", "file://"+p,
+			"--dev-url", openSQLite(t, ""),
+			"--to", to,
+		)
+		require.NoError(t, err)
+
+		t.Setenv("EDITOR", "cat")
+		_, err = runCmd(migrateEditCmd(), "99999999999999", "--dir", "file://"+p)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no migration file found")
+	})
+
+	t.Run("NoContentChange", func(t *testing.T) {
+		p := t.TempDir()
+		to := hclURL(t)
+		_, err := runCmd(
+			migrateDiffCmd(), "first",
+			"--dir", "file://"+p,
+			"--dev-url", openSQLite(t, ""),
+			"--to", to,
+		)
+		require.NoError(t, err)
+
+		d, err := migrate.NewLocalDir(p)
+		require.NoError(t, err)
+		files, err := d.Files()
+		require.NoError(t, err)
+		version := strings.SplitN(files[0].Name(), "_", 2)[0]
+		origContent := string(files[0].Bytes())
+
+		// Editor that does nothing (cat reads and outputs, doesn't modify file).
+		t.Setenv("EDITOR", "cat")
+		_, err = runCmd(migrateEditCmd(), version, "--dir", "file://"+p)
+		require.NoError(t, err)
+
+		files, err = d.Files()
+		require.NoError(t, err)
+		require.Equal(t, origContent, string(files[0].Bytes()))
+
+		_, err = runCmd(migrateValidateCmd(), "--dir", "file://"+p)
+		require.NoError(t, err)
+	})
+
+	t.Run("RequiresVersionArg", func(t *testing.T) {
+		p := t.TempDir()
+		_, err := runCmd(migrateEditCmd(), "--dir", "file://"+p)
+		require.Error(t, err)
+	})
+
+	t.Run("ReplaceContent", func(t *testing.T) {
+		p := t.TempDir()
+
+		// Manually create a migration file.
+		require.NoError(t, os.WriteFile(filepath.Join(p, "20240101000000_init.sql"), []byte("CREATE TABLE old (id int);\n"), 0644))
+		d, err := migrate.NewLocalDir(p)
+		require.NoError(t, err)
+		sum, err := d.Checksum()
+		require.NoError(t, err)
+		require.NoError(t, migrate.WriteSumFile(d, sum))
+
+		// Create a script that replaces the file content.
+		script := filepath.Join(t.TempDir(), "replace.sh")
+		require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho 'CREATE TABLE new_tbl (id int);' > \"$1\"\n"), 0755))
+
+		t.Setenv("EDITOR", script)
+		_, err = runCmd(migrateEditCmd(), "20240101000000", "--dir", "file://"+p)
+		require.NoError(t, err)
+
+		files, err := d.Files()
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		require.Contains(t, string(files[0].Bytes()), "CREATE TABLE new_tbl")
+		require.NotContains(t, string(files[0].Bytes()), "CREATE TABLE old")
+
+		_, err = runCmd(migrateValidateCmd(), "--dir", "file://"+p)
+		require.NoError(t, err)
+	})
 }

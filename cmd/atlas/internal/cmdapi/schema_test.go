@@ -1119,6 +1119,121 @@ func TestSchema_Clean(t *testing.T) {
 	require.NoError(t, c.Driver.CheckClean(context.Background(), nil))
 }
 
+func TestSchema_CleanDryRun(t *testing.T) {
+	t.Run("Basic", func(t *testing.T) {
+		var (
+			u      = fmt.Sprintf("sqlite://file:%s?cache=shared&_fk=1", filepath.Join(t.TempDir(), "test.db"))
+			c, err = sqlclient.Open(context.Background(), u)
+		)
+		require.NoError(t, err)
+
+		// Seed the database.
+		_, err = runCmd(migrateApplyCmd(), "--dir", "file://testdata/sqlite", "--url", u)
+		require.NoError(t, err)
+
+		// Dry-run output contains DROP SQL.
+		s, err := runCmd(schemaCleanCmd(), "--url", u, "--dry-run")
+		require.NoError(t, err)
+		require.Contains(t, s, "DROP")
+
+		// Database is NOT clean (tables still exist).
+		require.Error(t, c.Driver.CheckClean(context.Background(), nil))
+	})
+
+	t.Run("EmptyDatabase", func(t *testing.T) {
+		u := fmt.Sprintf("sqlite://file:%s?cache=shared&_fk=1", filepath.Join(t.TempDir(), "test.db"))
+
+		s, err := runCmd(schemaCleanCmd(), "--url", u, "--dry-run")
+		require.NoError(t, err)
+		require.Contains(t, s, "Nothing to drop")
+	})
+
+	t.Run("MultipleTables", func(t *testing.T) {
+		u := openSQLite(t, "create table a (id int); create table b (id int);")
+
+		s, err := runCmd(schemaCleanCmd(), "--url", u, "--dry-run")
+		require.NoError(t, err)
+		require.Contains(t, s, "DROP")
+
+		// Verify both tables still exist.
+		c, err := sqlclient.Open(context.Background(), u)
+		require.NoError(t, err)
+		realm, err := c.InspectRealm(context.Background(), nil)
+		require.NoError(t, err)
+		require.Len(t, realm.Schemas[0].Tables, 2)
+	})
+
+	t.Run("WithAutoApprove", func(t *testing.T) {
+		u := openSQLite(t, "create table t (id int);")
+		c, err := sqlclient.Open(context.Background(), u)
+		require.NoError(t, err)
+
+		// --dry-run takes precedence: tables should NOT be dropped.
+		s, err := runCmd(schemaCleanCmd(), "--url", u, "--dry-run", "--auto-approve")
+		require.NoError(t, err)
+		require.Contains(t, s, "DROP")
+		require.Error(t, c.Driver.CheckClean(context.Background(), nil))
+	})
+}
+
+func TestSchema_CleanFormat(t *testing.T) {
+	u := openSQLite(t, "create table t (id int);")
+
+	t.Run("CustomTemplate", func(t *testing.T) {
+		s, err := runCmd(schemaCleanCmd(), "--url", u, "--dry-run",
+			"--format", `{{ range .Changes.Pending }}{{ .Cmd }};{{ end }}`,
+		)
+		require.NoError(t, err)
+		require.Contains(t, s, "DROP")
+	})
+
+	t.Run("InvalidTemplate", func(t *testing.T) {
+		_, err := runCmd(schemaCleanCmd(), "--url", u, "--dry-run",
+			"--format", `{{ invalid`,
+		)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "parse log format")
+	})
+}
+
+func TestSchema_InspectHCL(t *testing.T) {
+	t.Run("SingleTable", func(t *testing.T) {
+		u := openSQLite(t, "create table t (c int);")
+		s, err := runCmd(schemaInspectCmd(), "--url", u, "--format", "{{ hcl . }}")
+		require.NoError(t, err)
+		require.Contains(t, s, "table")
+		require.Contains(t, s, "\"t\"")
+		require.Contains(t, s, "\"c\"")
+	})
+
+	t.Run("MultipleTables", func(t *testing.T) {
+		u := openSQLite(t, "create table users (id int primary key, name text); create table posts (id int primary key, user_id int references users(id));")
+		s, err := runCmd(schemaInspectCmd(), "--url", u, "--format", "{{ hcl . }}")
+		require.NoError(t, err)
+		require.Contains(t, s, "\"users\"")
+		require.Contains(t, s, "\"posts\"")
+		require.Contains(t, s, "\"name\"")
+	})
+
+	t.Run("EmptySchema", func(t *testing.T) {
+		u := openSQLite(t, "")
+		s, err := runCmd(schemaInspectCmd(), "--url", u, "--format", "{{ hcl . }}")
+		require.NoError(t, err)
+		require.NotContains(t, s, "table")
+	})
+
+	t.Run("MatchesDefaultOutput", func(t *testing.T) {
+		u := openSQLite(t, "create table t (c int);")
+		// Default output uses MarshalHCL.
+		defaultOut, err := runCmd(schemaInspectCmd(), "--url", u)
+		require.NoError(t, err)
+		// hcl function output should match.
+		hclOut, err := runCmd(schemaInspectCmd(), "--url", u, "--format", "{{ hcl . }}")
+		require.NoError(t, err)
+		require.Equal(t, strings.TrimSpace(defaultOut), strings.TrimSpace(hclOut))
+	})
+}
+
 func assertDir(t *testing.T, dir string, expected map[string]string) {
 	act := make(map[string]string)
 	files, err := os.ReadDir(dir)
