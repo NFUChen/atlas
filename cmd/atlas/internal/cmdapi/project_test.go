@@ -386,10 +386,6 @@ diff {
 
 func TestPartialParse(t *testing.T) {
 	h := `
-data "remote_dir" "ignored" {
-  name = "ignored"
-}
-
 locals {
   a = "b"
 }
