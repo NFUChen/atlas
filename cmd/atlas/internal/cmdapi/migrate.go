@@ -8,14 +8,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,7 +21,6 @@ import (
 	"text/template/parse"
 	"time"
 
-	"ariga.io/atlas/cmd/atlas/internal/cloudapi"
 	"ariga.io/atlas/cmd/atlas/internal/cmdext"
 	"ariga.io/atlas/cmd/atlas/internal/cmdlog"
 	cmdmigrate "ariga.io/atlas/cmd/atlas/internal/migrate"
@@ -33,7 +30,6 @@ import (
 	"ariga.io/atlas/sql/sqlclient"
 	"ariga.io/atlas/sql/sqltool"
 
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
@@ -59,7 +55,7 @@ type migrateApplyFlags struct {
 	baselineVersion string // apply with this version as baseline
 	txMode          string // (none, file, all)
 	execOrder       string // (linear, linear-skip, non-linear)
-	context         string // Run context. See cloudapi.DeployContextInput.
+	context         string
 }
 
 func (f *migrateApplyFlags) migrateOptions() ([]migrate.ExecutorOption, error) {
@@ -105,8 +101,6 @@ If run with the "--dry-run" flag, atlas will not execute any SQL.`,
 			RunE: RunE(func(cmd *cobra.Command, args []string) (cmdErr error) {
 				switch {
 				case GlobalFlags.SelectedEnv == "":
-					// Env not selected, but the
-					// -c flag might be set.
 					env, err := selectEnv(cmd)
 					if err != nil {
 						return err
@@ -114,28 +108,14 @@ If run with the "--dry-run" flag, atlas will not execute any SQL.`,
 					if err := setMigrateEnvFlags(cmd, env); err != nil {
 						return err
 					}
-					return migrateApplyRun(cmd, args, flags, env, &MigrateReport{}) // nop reporter
+					return migrateApplyRun(cmd, args, flags, env)
 				default:
-					project, envs, err := EnvByName(cmd, GlobalFlags.SelectedEnv, GlobalFlags.Vars)
+					_, envs, err := EnvByName(cmd, GlobalFlags.SelectedEnv, GlobalFlags.Vars)
 					if err != nil {
 						return err
 					}
-					set, err := NewReportProvider(cmd.Context(), project, envs, &flags)
-					if err != nil {
-						return err
-					}
-					var hasRemote bool
-					defer func() {
-						if hasRemote {
-							set.Flush(cmd, cmdErr)
-						}
-					}()
 					return cmdEnvsRun(envs, setMigrateEnvFlags, cmd, func(env *Env) error {
-						// Report deployments only if one of the migration directories is a cloud directory.
-						if u, err := url.Parse(flags.dirURL); err == nil && u.Scheme == cmdmigrate.DirTypeAtlas {
-							hasRemote = true
-						}
-						return migrateApplyRun(cmd, args, flags, env, set.ReportFor(flags, env))
+						return migrateApplyRun(cmd, args, flags, env)
 					})
 				}
 			}),
@@ -157,314 +137,6 @@ If run with the "--dry-run" flag, atlas will not execute any SQL.`,
 	cmd.Flags().BoolVarP(&flags.allowDirty, flagAllowDirty, "", false, "allow start working on a non-clean database")
 	cmd.MarkFlagsMutuallyExclusive(flagLog, flagFormat)
 	return cmd
-}
-
-type (
-	// MigrateReport responsible for reporting 'migrate apply' reports.
-	MigrateReport struct {
-		id     string // target id
-		env    *Env   // nil, if no env set
-		client *sqlclient.Client
-		log    *cmdlog.MigrateApply
-		rrw    cmdmigrate.RevisionReadWriter
-		done   func(*cloudapi.ReportMigrationInput)
-	}
-	// MigrateReportSet is a set of reports.
-	MigrateReportSet struct {
-		cloudapi.ReportMigrationSetInput
-		client *cloudapi.Client
-		done   int // number of done migrations
-	}
-)
-
-// NewReportProvider returns a new ReporterProvider.
-func NewReportProvider(ctx context.Context, p *Project, envs []*Env, flags *migrateApplyFlags) (*MigrateReportSet, error) {
-	c := cloudapi.FromContext(ctx)
-	if p.cloud.Client != nil {
-		c = p.cloud.Client
-	}
-	s := &MigrateReportSet{
-		client: c,
-		ReportMigrationSetInput: cloudapi.ReportMigrationSetInput{
-			ID:        uuid.NewString(),
-			StartTime: time.Now(),
-			Planned:   len(envs),
-		},
-	}
-	if flags.context != "" {
-		if err := json.Unmarshal([]byte(flags.context), &s.Context); err != nil {
-			return nil, fmt.Errorf("invalid --context: %w", err)
-		}
-	}
-	s.Step("Start migration for %d targets", len(envs))
-	for _, e := range envs {
-		s.StepLog(s.RedactedURL(e.URL))
-	}
-	return s, nil
-}
-
-// RedactedURL returns the redacted URL of the given environment at index i.
-func (*MigrateReportSet) RedactedURL(u string) string {
-	u, err := cloudapi.RedactedURL(u)
-	if err != nil {
-		return fmt.Sprintf("Error: redacting URL: %v", err)
-	}
-	return u
-}
-
-// Step starts a new reporting step.
-func (s *MigrateReportSet) Step(format string, args ...interface{}) {
-	if len(s.Log) > 0 && s.Log[len(s.Log)-1].EndTime.IsZero() {
-		s.Log[len(s.Log)-1].EndTime = time.Now()
-	}
-	s.Log = append(s.Log, cloudapi.ReportStep{
-		StartTime: time.Now(),
-		Text:      fmt.Sprintf(format, args...),
-	})
-}
-
-// StepLog logs a line to the current reporting step.
-func (s *MigrateReportSet) StepLog(text string) {
-	if len(s.Log) == 0 {
-		s.Step("Unnamed step") // Unexpected.
-	}
-	s.Log[len(s.Log)-1].Log = append(s.Log[len(s.Log)-1].Log, cloudapi.ReportStepLog{
-		Text: text,
-	})
-}
-
-// StepLogf logs a line to the current reporting step with formatting.
-func (s *MigrateReportSet) StepLogf(format string, args ...interface{}) {
-	s.StepLog(fmt.Sprintf(format, args...))
-}
-
-// StepLogError logs a line to the current reporting step.
-func (s *MigrateReportSet) StepLogError(text string) {
-	if !strings.HasPrefix(text, "Error") {
-		text = "Error: " + text
-	}
-	s.StepLog(text)
-	s.Error = &text
-	s.Log[len(s.Log)-1].Error = true
-}
-
-// ReportFor returns a new MigrateReport for the given environment.
-func (s *MigrateReportSet) ReportFor(flags migrateApplyFlags, e *Env) *MigrateReport {
-	s.Step("Run migration: %d", s.done+1)
-	s.StepLogf("Target URL: %s", s.RedactedURL(e.URL))
-	s.StepLogf("Migration directory: %s", s.RedactedURL(flags.dirURL))
-	return &MigrateReport{
-		env: e,
-		done: func(r *cloudapi.ReportMigrationInput) {
-			s.done++
-			r.DryRun = flags.dryRun
-			s.Log[len(s.Log)-1].EndTime = time.Now()
-			if r.Error != nil && *r.Error != "" {
-				s.StepLogError(*r.Error)
-			}
-			s.Completed = append(s.Completed, *r)
-		},
-	}
-}
-
-// Flush report the migration deployment to the cloud.
-// The current implementation is simplistic and sends each
-// report separately without marking them as part of a group.
-//
-// Note that reporting errors are logged, but not cause Atlas to fail.
-func (s *MigrateReportSet) Flush(cmd *cobra.Command, cmdErr error) {
-	if cmdErr != nil && s.Error == nil {
-		var uerr *url.Error
-		if errors.As(cmdErr, &uerr) {
-			uerr.URL = ""
-			cmdErr = uerr
-		}
-		s.StepLogError(cmdErr.Error())
-	}
-	var (
-		err  error
-		link string
-	)
-	switch {
-	// Skip reporting if set is empty,
-	// or there is no cloud connectivity.
-	case s.Planned == 0, s.client == nil:
-		return
-	// Single migration that was completed.
-	case s.Planned == 1 && len(s.Completed) == 1:
-		s.Completed[0].Context = s.Context
-		link, err = s.client.ReportMigration(cmd.Context(), s.Completed[0])
-	// Single migration that failed to start.
-	case s.Planned == 1 && len(s.Completed) == 0:
-		s.EndTime = time.Now()
-		link, err = s.client.ReportMigrationSet(cmd.Context(), s.ReportMigrationSetInput)
-	// Multi environment migration (e.g., multi-tenancy).
-	case s.Planned > 1:
-		s.EndTime = time.Now()
-		link, err = s.client.ReportMigrationSet(cmd.Context(), s.ReportMigrationSetInput)
-	}
-	switch {
-	case err != nil:
-		txt := fmt.Sprintf("Error: %s", strings.TrimRight(err.Error(), "\n"))
-		// Ensure errors are printed in new lines.
-		if cmd.Flags().Changed(flagFormat) {
-			txt = "\n" + txt
-		}
-		cmd.PrintErrln(txt)
-	// Unlike errors that are printed to stderr, links are printed to stdout.
-	// We do it only if the format was not customized by the user (e.g., JSON).
-	case link != "" && !cmd.Flags().Changed(flagFormat):
-		cmd.Println(link)
-	}
-}
-
-// Init the report if the necessary dependencies.
-func (r *MigrateReport) Init(c *sqlclient.Client, l *cmdlog.MigrateApply, rrw cmdmigrate.RevisionReadWriter) {
-	r.client, r.log, r.rrw = c, l, rrw
-}
-
-// RecordTargetID asks the revisions-table to allow or provide
-// the target identifier if cloud reporting is enabled.
-func (r *MigrateReport) RecordTargetID(ctx context.Context) error {
-	if r.CloudEnabled(ctx) {
-		id, err := r.rrw.ID(ctx, operatorVersion())
-		if err != nil {
-			return err
-		}
-		r.id = id
-	}
-	return nil
-}
-
-// RecordPlanError records any errors that occurred during the planning phase. i.e., when calling to ex.Pending.
-func (r *MigrateReport) RecordPlanError(cmd *cobra.Command, flags migrateApplyFlags, planerr string) {
-	if !r.CloudEnabled(cmd.Context()) {
-		return
-	}
-	var ver string
-	if rev, err := r.rrw.CurrentRevision(cmd.Context()); err == nil {
-		ver = rev.Version
-	}
-	r.done(&cloudapi.ReportMigrationInput{
-		ProjectName:  r.env.config.cloud.Project,
-		EnvName:      r.env.Name,
-		DirName:      r.DirName(flags),
-		AtlasVersion: operatorVersion(),
-		Target: cloudapi.DeployedTargetInput{
-			ID:     r.id,
-			Schema: r.client.URL.Schema,
-			URL:    r.client.URL.Redacted(),
-		},
-		StartTime:      r.log.Start,
-		EndTime:        r.log.End,
-		FromVersion:    r.log.Current,
-		ToVersion:      r.log.Target,
-		CurrentVersion: ver,
-		Error:          &planerr,
-		Log:            planerr,
-	})
-}
-
-// Done closes and flushes this report.
-func (r *MigrateReport) Done(cmd *cobra.Command, flags migrateApplyFlags) error {
-	if !r.CloudEnabled(cmd.Context()) {
-		return logApply(cmd, cmd.OutOrStdout(), flags, r.log)
-	}
-	var (
-		ver  string
-		clog bytes.Buffer
-		err  = logApply(cmd, io.MultiWriter(cmd.OutOrStdout(), &clog), flags, r.log)
-	)
-	switch rev, err1 := r.rrw.CurrentRevision(cmd.Context()); {
-	case errors.Is(err1, migrate.ErrRevisionNotExist):
-	case err1 != nil:
-		return errors.Join(err, err1)
-	default:
-		ver = rev.Version
-	}
-	r.done(&cloudapi.ReportMigrationInput{
-		ProjectName:  r.env.config.cloud.Project,
-		EnvName:      r.env.Name,
-		DirName:      r.DirName(flags),
-		AtlasVersion: operatorVersion(),
-		Target: cloudapi.DeployedTargetInput{
-			ID:     r.id,
-			Schema: r.client.URL.Schema,
-			URL:    r.client.URL.Redacted(),
-		},
-		StartTime:      r.log.Start,
-		EndTime:        r.log.End,
-		FromVersion:    r.log.Current,
-		ToVersion:      r.log.Target,
-		CurrentVersion: ver,
-		Error: func() *string {
-			if r.log.Error != "" {
-				return &r.log.Error
-			}
-			return nil
-		}(),
-		Files: func() []cloudapi.DeployedFileInput {
-			files := make([]cloudapi.DeployedFileInput, len(r.log.Applied))
-			for i, f := range r.log.Applied {
-				f1 := cloudapi.DeployedFileInput{
-					Name:      f.Name(),
-					Content:   string(f.Bytes()),
-					StartTime: f.Start,
-					EndTime:   f.End,
-					Skipped:   f.Skipped,
-					Applied:   len(f.Applied),
-					Error:     (*cloudapi.StmtErrorInput)(f.Error),
-					Checks:    make([]cloudapi.FileChecksInput, 0, len(f.Checks)),
-				}
-				for _, c := range f.Checks {
-					stmts := make([]cloudapi.CheckStmtInput, 0, len(c.Stmts))
-					for _, s := range c.Stmts {
-						stmts = append(stmts, cloudapi.CheckStmtInput{
-							Stmt:  s.Stmt,
-							Error: s.Error,
-						})
-					}
-					f1.Checks = append(f1.Checks, cloudapi.FileChecksInput{
-						Name:   c.Name,
-						Start:  c.Start,
-						End:    c.End,
-						Checks: stmts,
-						Error:  (*cloudapi.StmtErrorInput)(c.Error),
-					})
-				}
-				files[i] = f1
-			}
-			return files
-		}(),
-		Log: clog.String(),
-	})
-	return err
-}
-
-// DirName returns the directory name for the report.
-func (r *MigrateReport) DirName(flags migrateApplyFlags) string {
-	dirName := flags.dirURL
-	switch u, err := url.Parse(flags.dirURL); {
-	case err != nil:
-	// Local directories are reported as (dangling)
-	// deployments without a directory.
-	case u.Scheme == cmdmigrate.DirTypeFile:
-		dirName = cloudapi.DefaultDirName
-	// Directory slug.
-	default:
-		dirName = path.Join(u.Host, u.Path)
-	}
-	return dirName
-}
-
-// CloudEnabled reports if cloud reporting is enabled.
-func (r *MigrateReport) CloudEnabled(ctx context.Context) bool {
-	if r.env == nil || r.env.cloud == nil {
-		return false // The --env was not set.
-	}
-	cloud := r.env.cloud
-	// Cloud reporting is enabled only if there is a cloud connection.
-	return cloud.Project != "" && (cloud.Client != nil || cloudapi.FromContext(ctx) != nil)
 }
 
 func logApply(cmd *cobra.Command, w io.Writer, flags migrateApplyFlags, r *cmdlog.MigrateApply) error {
@@ -774,7 +446,7 @@ type migrateLintFlags struct {
 	// Not enabled by default.
 	dirBase string // --base atlas://myapp
 	web     bool   // Open the web browser
-	context string // Run context. See cloudapi.ContextInput.
+	context string
 }
 
 // migrateLintCmd represents the 'atlas migrate lint' subcommand.
@@ -1714,7 +1386,7 @@ func (dryRunRevisions) WriteRevision(context.Context, *migrate.Revision) error {
 }
 
 // migrateApplyRun represents the 'atlas migrate apply' subcommand.
-func migrateApplyRun(cmd *cobra.Command, args []string, flags migrateApplyFlags, env *Env, mr *MigrateReport) (err error) {
+func migrateApplyRun(cmd *cobra.Command, args []string, flags migrateApplyFlags, env *Env) (err error) {
 	var (
 		count int
 		ctx   = cmd.Context()
@@ -1775,14 +1447,7 @@ func migrateApplyRun(cmd *cobra.Command, args []string, flags migrateApplyFlags,
 	if err := mrrw.Migrate(ctx); err != nil {
 		return err
 	}
-	// Setup reporting info.
 	report := cmdlog.NewMigrateApply(ctx, client, dirURL)
-	mr.Init(client, report, mrrw)
-	// If cloud reporting is enabled, and we cannot obtain the current
-	// target identifier, abort and report it to the user.
-	if err := mr.RecordTargetID(cmd.Context()); err != nil {
-		return err
-	}
 	// Determine pending files.
 	opts, err := flags.migrateOptions()
 	if err != nil {
@@ -1795,7 +1460,6 @@ func migrateApplyRun(cmd *cobra.Command, args []string, flags migrateApplyFlags,
 	}
 	pending, err := ex.Pending(ctx)
 	if err != nil && !errors.Is(err, migrate.ErrNoPendingFiles) {
-		mr.RecordPlanError(cmd, flags, err.Error())
 		return err
 	}
 	noPending := errors.Is(err, migrate.ErrNoPendingFiles)
@@ -1807,7 +1471,7 @@ func migrateApplyRun(cmd *cobra.Command, args []string, flags migrateApplyFlags,
 	}
 	if noPending {
 		migrate.LogNoPendingFiles(report, applied)
-		return mr.Done(cmd, flags)
+		return logApply(cmd, cmd.OutOrStdout(), flags, report)
 	}
 	if l := len(pending); count == 0 || count >= l {
 		// Cannot apply more than len(pending) migration files.
@@ -1847,5 +1511,5 @@ func migrateApplyRun(cmd *cobra.Command, args []string, flags migrateApplyFlags,
 	if err != nil {
 		report.Error = err.Error()
 	}
-	return errors.Join(err, mr.Done(cmd, flags))
+	return errors.Join(err, logApply(cmd, cmd.OutOrStdout(), flags, report))
 }

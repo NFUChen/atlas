@@ -31,21 +31,6 @@ type (
 		stdout     io.Writer
 		stderr     io.Writer
 	}
-	// LoginParams are the parameters for the `login` command.
-	LoginParams struct {
-		Token     string
-		GrantOnly bool // If true, runs `atlas login --grant-only` for offline token flow.
-	}
-	// WhoAmIParams are the parameters for the `whoami` command
-	WhoAmIParams struct {
-		ConfigURL string
-		Env       string
-		Vars      VarArgs
-	}
-	// WhoAmI contains the result of an 'atlas whoami' run.
-	WhoAmI struct {
-		Org string `json:"Org,omitempty"`
-	}
 	// Version contains the result of an 'atlas version' run.
 	Version struct {
 		Version string `json:"Version"`
@@ -176,41 +161,6 @@ func (c *Client) SetStderr(w io.Writer) {
 	c.stderr = w
 }
 
-// Login runs the 'login' command.
-func (c *Client) Login(ctx context.Context, params *LoginParams) error {
-	if params.Token == "" {
-		return errors.New("token cannot be empty")
-	}
-	args := []string{"login", "--token", params.Token}
-	if params.GrantOnly {
-		args = append(args, "--grant-only")
-	}
-	_, err := c.runCommand(ctx, args)
-	return err
-}
-
-// Logout runs the 'logout' command.
-func (c *Client) Logout(ctx context.Context) error {
-	_, err := c.runCommand(ctx, []string{"logout"})
-	return err
-}
-
-// WhoAmI runs the 'whoami' command.
-func (c *Client) WhoAmI(ctx context.Context, params *WhoAmIParams) (*WhoAmI, error) {
-	args := []string{"whoami", "--format", "{{ json . }}"}
-	// Global flags
-	if params.ConfigURL != "" {
-		args = append(args, "--config", params.ConfigURL)
-	}
-	if params.Env != "" {
-		args = append(args, "--env", params.Env)
-	}
-	if params.Vars != nil {
-		args = append(args, params.Vars.AsArgs()...)
-	}
-	return firstResult(jsonDecode[WhoAmI](c.runCommand(ctx, args)))
-}
-
 var reVersion = regexp.MustCompile(`^atlas version v(\d+\.\d+.\d+)-?([a-z0-9]*)?`)
 
 // Version runs the 'version' command.
@@ -286,10 +236,6 @@ var defaultEnvs = map[string]string{
 	"ATLAS_NO_UPGRADE_SUGGESTIONS": "1",
 }
 
-// ErrRequireLogin is returned when a command requires the user to be logged in.
-// It exists here to be shared between the different packages that require login.
-var ErrRequireLogin = errors.New("command requires 'atlas login'")
-
 // runCommand runs the given command and returns its output.
 func (c *Client) runCommand(ctx context.Context, args []string) (io.Reader, error) {
 	var stdout, stderr bytes.Buffer
@@ -363,11 +309,6 @@ func (c *Client) cmd(ctx context.Context, args []string) *exec.Cmd {
 func (c *Client) runErr(err error, stdout, stderr interface{ String() string }) error {
 	if err == nil {
 		return nil
-	}
-	e := strings.TrimSpace(stderr.String())
-	// Explicit check the stderr for the login error.
-	if e == "Error: command requires 'atlas login'" {
-		return ErrRequireLogin
 	}
 	return &Error{
 		err:    err,

@@ -526,7 +526,7 @@ func readerUseDev(env *Env, urls ...string) (bool, error) {
 		}
 		// No circular reference possible with env:// variable.
 		return readerUseDev(env, u)
-	case s == cmdext.SchemaTypeFile, s == cmdext.SchemaTypeAtlas:
+	case s == cmdext.SchemaTypeFile:
 		return true, nil
 	default:
 		return cmdext.States.HasLoader(s), nil
@@ -556,9 +556,6 @@ func stateReader(ctx context.Context, env *Env, config *stateReaderConfig) (*cmd
 		default:
 			panic("unreachable") // checked by filesExt.
 		}
-	// "atlas" scheme represents an Atlas Cloud schema.
-	case cmdext.SchemaTypeAtlas:
-		return cmdext.StateReaderAtlas(ctx, excfg)
 	// "env" scheme represents an attribute defined
 	// on the selected environment.
 	case envAttrScheme:
@@ -689,15 +686,12 @@ Or, visit the website to see all installation options:
 type (
 	// Project represents an atlas.hcl project config file.
 	Project struct {
-		Envs  []*Env `spec:"env"`  // List of environments
-		Lint  *Lint  `spec:"lint"` // Optional global lint policy
-		Diff  *Diff  `spec:"diff"` // Optional global diff policy
-		Test  *Test  `spec:"test"` // Optional test configuration
-		cloud *cmdext.AtlasConfig
+		Envs []*Env `spec:"env"`  // List of environments
+		Lint *Lint  `spec:"lint"` // Optional global lint policy
+		Diff *Diff  `spec:"diff"` // Optional global diff policy
+		Test *Test  `spec:"test"` // Optional test configuration
 	}
 )
-
-func maySuggestUpgrade(_ *cobra.Command) {}
 
 // migrateLintSetFlags allows setting extra flags for the 'migrate lint' command.
 func migrateLintSetFlags(*cobra.Command, *migrateLintFlags) {}
@@ -941,7 +935,6 @@ func schemaApplyRun(cmd *cobra.Command, flags schemaApplyFlags, env *Env) error 
 	if err != nil {
 		return err
 	}
-	maySuggestUpgrade(cmd)
 	// Returning at this stage should
 	// not trigger the help message.
 	cmd.SilenceUsage = true
@@ -1058,7 +1051,6 @@ func schemaDiffRun(cmd *cobra.Command, _ []string, flags schemaDiffFlags, env *E
 	if err != nil {
 		return err
 	}
-	maySuggestUpgrade(cmd)
 	return format.Execute(cmd.OutOrStdout(),
 		cmdlog.NewSchemaDiff(ctx, c, diff.from, diff.to, diff.changes),
 	)
@@ -1082,11 +1074,6 @@ func promptApply(cmd *cobra.Command, flags schemaApplyFlags, diff *diff, client,
 	return nil
 }
 
-func maySetLoginContext(*cobra.Command, *Project) error {
-	return nil
-}
-
-func setEnvs(context.Context, []*Env) {}
 
 // specOptions are the options for the schema spec.
 var specOptions []schemahcl.Option
@@ -1202,7 +1189,6 @@ func schemaInspectRun(cmd *cobra.Command, _ []string, flags schemaInspectFlags, 
 	if err != nil {
 		return err
 	}
-	maySuggestUpgrade(cmd)
 	i := cmdlog.NewSchemaInspect(ctx, client, s)
 	i.URL = flags.url
 	return format.Execute(cmd.OutOrStdout(), i)

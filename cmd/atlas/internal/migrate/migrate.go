@@ -377,9 +377,8 @@ func Dir(ctx context.Context, u string, create bool) (migrate.Dir, error) {
 
 // Directory types (URL schemes).
 const (
-	DirTypeMem   = "mem"
-	DirTypeFile  = "file"
-	DirTypeAtlas = "atlas"
+	DirTypeMem  = "mem"
+	DirTypeFile = "file"
 )
 
 // DefaultDirName is the default directory name.
@@ -395,8 +394,6 @@ func DirURL(ctx context.Context, u *url.URL, create bool) (migrate.Dir, error) {
 		if p == "" {
 			p = DefaultDirName
 		}
-	case DirTypeAtlas:
-		return openAtlasDir(ctx, u)
 	case "":
 		return nil, fmt.Errorf("missing scheme for dir url. Did you mean %q? ", fmt.Sprintf("%s://%s", DirTypeFile, u.Path))
 	default:
@@ -453,6 +450,3 @@ func ChangesToRealm(c *sqlclient.Client, r *schema.Realm) schema.Changes {
 	return changes
 }
 
-func openAtlasDir(context.Context, *url.URL) (migrate.Dir, error) {
-	return nil, fmt.Errorf("atlas remote directory is not supported by this release. See: https://atlasgo.io/getting-started")
-}
