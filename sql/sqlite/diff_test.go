@@ -123,8 +123,10 @@ func TestDiff_TableDiff(t *testing.T) {
 						To:     to.Columns[0],
 						Change: schema.ChangeNull | schema.ChangeDefault,
 					},
-					&schema.DropColumn{C: from.Columns[1]},
-					&schema.AddColumn{C: to.Columns[1]},
+					&schema.RenameColumn{
+						From: from.Columns[1],
+						To:   to.Columns[1],
+					},
 				},
 			}
 		}(),
