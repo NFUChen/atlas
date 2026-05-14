@@ -10,11 +10,13 @@ on:
 permissions:
   contents: write
 
-env:
-  ATLAS_NO_UPGRADE_SUGGESTIONS: 1
-
 jobs:
+  test:
+    uses: ./.github/workflows/ci-general.yaml
+    secrets: inherit
+
   build:
+    needs: test
     strategy:
       matrix:
         include:
