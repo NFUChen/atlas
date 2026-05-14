@@ -21,7 +21,6 @@ import (
 	"text/template"
 	"time"
 
-	"ariga.io/atlas/cmd/atlas/internal/cloudapi"
 	cmdmigrate "ariga.io/atlas/cmd/atlas/internal/migrate"
 	"ariga.io/atlas/schemahcl"
 	"ariga.io/atlas/sql/migrate"
@@ -54,8 +53,6 @@ var SpecOptions = append(
 		schemahcl.WithDataSource("external", External),
 		schemahcl.WithDataSource("runtimevar", RuntimeVar),
 		schemahcl.WithDataSource("template_dir", TemplateDir),
-		schemahcl.WithDataSource("remote_dir", RemoteDir),
-		schemahcl.WithDataSource("remote_schema", RemoteSchema),
 		schemahcl.WithDataSource("hcl_schema", SchemaHCL),
 		schemahcl.WithDataSource("external_schema", SchemaExternal),
 		schemahcl.WithDataSource("aws_rds_token", AWSRDSToken),
@@ -64,15 +61,6 @@ var SpecOptions = append(
 	specOptions...,
 )
 
-// AtlasConfig exposes non-sensitive information returned by the "atlas" init-block.
-// By invoking AtlasInitBlock() a new config is returned that is set by the init block
-// defined and executed on schemahcl Eval functions.
-type AtlasConfig struct {
-	Client  *cloudapi.Client // Client attached to Atlas Cloud.
-	Token   string           // User token.
-	Org     string           // Organization to connect to.
-	Project string           // Optional project.
-}
 
 // RuntimeVar exposes the gocloud.dev/runtimevar as a schemahcl datasource.
 //
@@ -621,21 +609,6 @@ func (l MemLoader) LoadState(ctx context.Context, config *StateReaderConfig) (*S
 
 var specOptions []schemahcl.Option
 
-// RemoteSchema is a data source that for reading remote schemas.
-func RemoteSchema(context.Context, *hcl.EvalContext, *hclsyntax.Block) (cty.Value, error) {
-	return cty.Zero, UnsupportedErr("data.remote_schema")
-}
-
-// RemoteDir is a data source that reads a remote migration directory.
-func RemoteDir(context.Context, *hcl.EvalContext, *hclsyntax.Block) (cty.Value, error) {
-	return cty.Zero, UnsupportedErr("data.remote_dir")
-}
-
-// StateReaderAtlas returns a migrate.StateReader from an Atlas Cloud schema.
-func StateReaderAtlas(context.Context, *StateReaderConfig) (*StateReadCloser, error) {
-	return nil, UnsupportedErr("atlas remote state")
-}
-
 // SchemaExternal is a data source that for reading external schemas.
 func SchemaExternal(context.Context, *hcl.EvalContext, *hclsyntax.Block) (cty.Value, error) {
 	return cty.Zero, UnsupportedErr("data.external_schema")
@@ -652,13 +625,6 @@ func (l EntLoader) LoadState(context.Context, *StateReaderConfig) (*StateReadClo
 // MigrateDiff returns the diff between ent.Schema and a directory.
 func (l EntLoader) MigrateDiff(context.Context, *MigrateDiffOptions) error {
 	return UnsupportedErr("ent:// scheme")
-}
-
-// InitBlock returns the handler for the "atlas" init block.
-func (c *AtlasConfig) InitBlock() schemahcl.Option {
-	return schemahcl.WithInitBlock("atlas", func(_ context.Context, ectx *hcl.EvalContext, block *hclsyntax.Block) (cty.Value, error) {
-		return cty.Zero, UnsupportedErr("atlas block")
-	})
 }
 
 // StateReaderSQL returns a migrate.StateReader from an SQL file or a directory of migrations.

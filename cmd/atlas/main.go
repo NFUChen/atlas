@@ -5,17 +5,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"ariga.io/atlas/cmd/atlas/internal/cmdapi"
-	"ariga.io/atlas/cmd/atlas/internal/cmdapi/vercheck"
-	"ariga.io/atlas/cmd/atlas/internal/cmdlog"
 	_ "ariga.io/atlas/cmd/atlas/internal/docker"
 	_ "ariga.io/atlas/sql/mysql"
 	_ "ariga.io/atlas/sql/mysql/mysqlcheck"
@@ -26,11 +22,9 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
-	"github.com/mattn/go-isatty"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
-	"golang.org/x/mod/semver"
 )
 
 func main() {
@@ -52,89 +46,12 @@ func main() {
 	}()
 	ctx, err := extendContext(ctx)
 	cobra.CheckErr(err)
-	ctx, done := initialize(ctx)
-	update := checkForUpdate(ctx)
 	err = cmdapi.Root.ExecuteContext(ctx)
-	if u := update(); u != "" {
-		_ = cmdlog.WarnOnce(os.Stderr, cmdlog.ColorCyan(u))
-	}
-	done(err)
 	if err != nil {
 		os.Exit(1)
 	}
 }
 
-const (
-	// envNoUpdate when enabled it cancels checking for update
-	envNoUpdate = "ATLAS_NO_UPDATE_NOTIFIER"
-	vercheckURL = "https://vercheck.ariga.io"
-)
-
-func noText() string { return "" }
-
-func checkForUpdate(ctx context.Context) func() string {
-	version := cmdapi.Version()
-	// Users may skip update checking behavior.
-	if v := os.Getenv(envNoUpdate); v != "" {
-		return noText
-	}
-	// Skip if the current binary version isn't set (dev mode).
-	if !semver.IsValid(version) {
-		return noText
-	}
-	endpoint := vercheckEndpoint(ctx)
-	vc := vercheck.New(endpoint)
-	if isatty.IsTerminal(os.Stdout.Fd()) {
-		return bgCheck(ctx, version, vc)
-	}
-	return func() string {
-		msg, _ := runCheck(ctx, vc, version)
-		return msg
-	}
-}
-
-// bgCheck checks for version updates and security advisories for Atlas in the background.
-func bgCheck(ctx context.Context, version string, vc *vercheck.VerChecker) func() string {
-	done := make(chan struct{})
-	var message string
-	go func() {
-		defer close(done)
-		msg, err := runCheck(ctx, vc, version)
-		if err != nil {
-			return
-		}
-		message = msg
-	}()
-	return func() string {
-		select {
-		case <-done:
-		case <-time.After(time.Millisecond * 500):
-		}
-		return message
-	}
-}
-
-func runCheck(ctx context.Context, vc *vercheck.VerChecker, version string) (string, error) {
-	payload, err := vc.Check(ctx, version)
-	if err != nil {
-		return "", err
-	}
-	var b bytes.Buffer
-	if err := vercheck.Notify.Execute(&b, payload); err != nil {
-		return "", err
-	}
-	return b.String(), nil
-}
-
 func extendContext(ctx context.Context) (context.Context, error) {
 	return ctx, nil
-}
-
-func vercheckEndpoint(context.Context) string {
-	return vercheckURL
-}
-
-// initialize is a no-op for the OSS version.
-func initialize(ctx context.Context) (context.Context, func(error)) {
-	return ctx, func(error) {}
 }

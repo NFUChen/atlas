@@ -344,54 +344,6 @@ func TestSchema_Plan(t *testing.T) {
 	}
 }
 
-func TestSchema_PlanPush(t *testing.T) {
-	wd, err := os.Getwd()
-	require.NoError(t, err)
-	c, err := atlasexec.NewClient(t.TempDir(), filepath.Join(wd, "./mock-atlas.sh"))
-	require.NoError(t, err)
-
-	testCases := []struct {
-		name   string
-		params *atlasexec.SchemaPlanPushParams
-		args   string
-	}{
-		{
-			name: "with auto-approve",
-			params: &atlasexec.SchemaPlanPushParams{
-				Repo: "testing-repo",
-				File: "file://plan.hcl",
-			},
-			args: "schema plan push --format {{ json . }} --file file://plan.hcl --repo testing-repo --auto-approve",
-		},
-		{
-			name: "with auto-approve and schema",
-			params: &atlasexec.SchemaPlanPushParams{
-				Repo:   "testing-repo",
-				File:   "file://plan.hcl",
-				Schema: []string{"public", "bupisu"},
-			},
-			args: "schema plan push --format {{ json . }} --schema public,bupisu --file file://plan.hcl --repo testing-repo --auto-approve",
-		},
-		{
-			name: "with pending status",
-			params: &atlasexec.SchemaPlanPushParams{
-				Pending: true,
-				File:    "file://plan.hcl",
-			},
-			args: "schema plan push --format {{ json . }} --file file://plan.hcl --pending",
-		},
-	}
-	for _, tt := range testCases {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TEST_ARGS", tt.args)
-			t.Setenv("TEST_STDOUT", `{"Repo":"foo"}`)
-			result, err := c.SchemaPlanPush(context.Background(), tt.params)
-			require.NoError(t, err)
-			require.Equal(t, `{"Repo":"foo"}`, result)
-		})
-	}
-}
-
 func TestSchema_PlanLint(t *testing.T) {
 	wd, err := os.Getwd()
 	require.NoError(t, err)
@@ -513,36 +465,6 @@ func TestSchema_PlanApprove(t *testing.T) {
 	}
 }
 
-func TestSchema_PlanPull(t *testing.T) {
-	wd, err := os.Getwd()
-	require.NoError(t, err)
-	c, err := atlasexec.NewClient(t.TempDir(), filepath.Join(wd, "./mock-atlas.sh"))
-	require.NoError(t, err)
-
-	testCases := []struct {
-		name   string
-		params *atlasexec.SchemaPlanPullParams
-		args   string
-	}{
-		{
-			name: "with url",
-			params: &atlasexec.SchemaPlanPullParams{
-				URL: "atlas://app1/plans/foo-plan",
-			},
-			args: "schema plan pull --url atlas://app1/plans/foo-plan",
-		},
-	}
-	for _, tt := range testCases {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TEST_ARGS", tt.args)
-			t.Setenv("TEST_STDOUT", "excited-plan")
-			result, err := c.SchemaPlanPull(context.Background(), tt.params)
-			require.NoError(t, err)
-			require.Equal(t, "excited-plan", result)
-		})
-	}
-}
-
 func TestSchema_PlanList(t *testing.T) {
 	wd, err := os.Getwd()
 	require.NoError(t, err)
@@ -592,92 +514,6 @@ func TestSchema_PlanList(t *testing.T) {
 			result, err := c.SchemaPlanList(context.Background(), tt.params)
 			require.NoError(t, err)
 			require.Equal(t, "pr-2-ufnTS7Nr", result[0].Name)
-		})
-	}
-}
-
-func TestSchema_Push(t *testing.T) {
-	wd, err := os.Getwd()
-	require.NoError(t, err)
-	c, err := atlasexec.NewClient(t.TempDir(), filepath.Join(wd, "./mock-atlas.sh"))
-	require.NoError(t, err)
-
-	testCases := []struct {
-		name   string
-		params *atlasexec.SchemaPushParams
-		args   string
-	}{
-		{
-			name:   "no params",
-			params: &atlasexec.SchemaPushParams{},
-			args:   "schema push --format {{ json . }}",
-		},
-		{
-			name: "push with 1 URL",
-			params: &atlasexec.SchemaPushParams{
-				URL: []string{"file://foo.hcl"},
-			},
-			args: "schema push --format {{ json . }} --url file://foo.hcl",
-		},
-		{
-			name: "push with 2 URLs",
-			params: &atlasexec.SchemaPushParams{
-				URL: []string{"file://foo.hcl", "file://bupisu.hcl"},
-			},
-			args: "schema push --format {{ json . }} --url file://foo.hcl --url file://bupisu.hcl",
-		},
-		{
-			name: "with repo",
-			params: &atlasexec.SchemaPushParams{
-				Name: "atlas-action",
-			},
-			args: "schema push --format {{ json . }} atlas-action",
-		},
-		{
-			name: "with repo and schemas",
-			params: &atlasexec.SchemaPushParams{
-				Name:   "atlas-action",
-				Schema: []string{"public", "bupisu"},
-			},
-			args: "schema push --format {{ json . }} --schema public,bupisu atlas-action",
-		},
-		{
-			name: "with repo and tag",
-			params: &atlasexec.SchemaPushParams{
-				Name: "atlas-action",
-				Tag:  "v1.0.0",
-			},
-			args: "schema push --format {{ json . }} --tag v1.0.0 atlas-action",
-		},
-		{
-			name: "with repo and tag and description",
-			params: &atlasexec.SchemaPushParams{
-				Name:        "atlas-action",
-				Tag:         "v1.0.0",
-				Description: "release-v1",
-			},
-			args: "schema push --format {{ json . }} --tag v1.0.0 --desc release-v1 atlas-action",
-		},
-		{
-			name: "with repo and tag, version and description",
-			params: &atlasexec.SchemaPushParams{
-				Name:        "atlas-action",
-				Tag:         "v1.0.0",
-				Version:     "20240829100417",
-				Description: "release-v1",
-			},
-			args: "schema push --format {{ json . }} --tag v1.0.0 --version 20240829100417 --desc release-v1 atlas-action",
-		},
-	}
-	for _, tt := range testCases {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TEST_ARGS", tt.args)
-			t.Setenv("TEST_STDOUT", `{"Link":"https://gh.atlasgo.cloud/schemas/141733920810","Slug":"awesome-app","URL":"atlas://awesome-app?tag=latest"}`)
-			result, err := c.SchemaPush(context.Background(), tt.params)
-			require.NoError(t, err)
-			require.Equal(t, "https://gh.atlasgo.cloud/schemas/141733920810", result.Link)
-			require.Equal(t, "atlas://awesome-app?tag=latest", result.URL)
-			require.Equal(t, "awesome-app", result.Slug)
 		})
 	}
 }

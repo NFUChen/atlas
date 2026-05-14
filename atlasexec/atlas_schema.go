@@ -16,27 +16,6 @@ import (
 )
 
 type (
-	// SchemaPushParams are the parameters for the `schema push` command.
-	SchemaPushParams struct {
-		ConfigURL string
-		Env       string
-		Vars      VarArgs
-		Context   *RunContext
-		DevURL    string
-
-		URL         []string // Desired schema URL(s) to push
-		Schema      []string // If set, only the specified schemas are pushed.
-		Name        string   // Name of the schema (repo) to push to.
-		Tag         string   // Tag to push the schema with
-		Version     string   // Version of the schema to push. Defaults to the current timestamp.
-		Description string   // Description of the schema changes.
-	}
-	// SchemaPush represents the result of a 'schema push' command.
-	SchemaPush struct {
-		Link string
-		Slug string
-		URL  string
-	}
 	// SchemaApplyParams are the parameters for the `schema apply` command.
 	SchemaApplyParams struct {
 		ConfigURL string
@@ -136,29 +115,6 @@ type (
 		From, To []string
 		Repo     string
 		Pending  bool // If true, only pending plans are listed.
-	}
-	// SchemaPlanPushParams are the parameters for the `schema plan push` command.
-	SchemaPlanPushParams struct {
-		ConfigURL string
-		Env       string
-		Vars      VarArgs
-		Context   *RunContext
-		DevURL    string
-		Schema    []string
-		Exclude   []string
-		Include   []string
-
-		From, To []string
-		Repo     string
-		Pending  bool   // Push plan in pending state.
-		File     string // File to push. (optional)
-	}
-	// SchemaPlanPullParams are the parameters for the `schema plan pull` command.
-	SchemaPlanPullParams struct {
-		ConfigURL string
-		Env       string
-		Vars      VarArgs
-		URL       string // URL to the plan in Atlas format. (required)
 	}
 	// SchemaPlanLintParams are the parameters for the `schema plan lint` command.
 	SchemaPlanLintParams struct {
@@ -273,50 +229,6 @@ type (
 		Schema  []string
 	}
 )
-
-// SchemaPush runs the 'schema push' command.
-func (c *Client) SchemaPush(ctx context.Context, params *SchemaPushParams) (*SchemaPush, error) {
-	args := []string{"schema", "push", "--format", "{{ json . }}"}
-	// Global flags
-	if params.ConfigURL != "" {
-		args = append(args, "--config", params.ConfigURL)
-	}
-	if params.Env != "" {
-		args = append(args, "--env", params.Env)
-	}
-	if params.Vars != nil {
-		args = append(args, params.Vars.AsArgs()...)
-	}
-	// Hidden flags
-	if params.Context != nil {
-		buf, err := json.Marshal(params.Context)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, "--context", string(buf))
-	}
-	// Flags of the 'schema push' sub-commands
-	args = append(args, repeatFlag("--url", params.URL)...)
-	if params.DevURL != "" {
-		args = append(args, "--dev-url", params.DevURL)
-	}
-	if len(params.Schema) > 0 {
-		args = append(args, "--schema", listString(params.Schema))
-	}
-	if params.Tag != "" {
-		args = append(args, "--tag", params.Tag)
-	}
-	if params.Version != "" {
-		args = append(args, "--version", params.Version)
-	}
-	if params.Description != "" {
-		args = append(args, "--desc", params.Description)
-	}
-	if params.Name != "" {
-		args = append(args, params.Name)
-	}
-	return firstResult(jsonDecode[SchemaPush](c.runCommand(ctx, args)))
-}
 
 // SchemaApply runs the 'schema apply' command.
 func (c *Client) SchemaApply(ctx context.Context, params *SchemaApplyParams) (*SchemaApply, error) {
@@ -556,84 +468,6 @@ func (c *Client) SchemaPlanList(ctx context.Context, params *SchemaPlanListParam
 		return nil, err
 	}
 	return *v, nil
-}
-
-// SchemaPlanPush runs the `schema plan push` command.
-func (c *Client) SchemaPlanPush(ctx context.Context, params *SchemaPlanPushParams) (string, error) {
-	args := []string{"schema", "plan", "push", "--format", "{{ json . }}"}
-	// Global flags
-	if params.ConfigURL != "" {
-		args = append(args, "--config", params.ConfigURL)
-	}
-	if params.Env != "" {
-		args = append(args, "--env", params.Env)
-	}
-	if params.Vars != nil {
-		args = append(args, params.Vars.AsArgs()...)
-	}
-	// Hidden flags
-	if params.Context != nil {
-		buf, err := json.Marshal(params.Context)
-		if err != nil {
-			return "", err
-		}
-		args = append(args, "--context", string(buf))
-	}
-	// Flags of the 'schema plan push' sub-commands
-	if params.DevURL != "" {
-		args = append(args, "--dev-url", params.DevURL)
-	}
-	if len(params.Schema) > 0 {
-		args = append(args, "--schema", listString(params.Schema))
-	}
-	if len(params.Exclude) > 0 {
-		args = append(args, "--exclude", listString(params.Exclude))
-	}
-	if len(params.Include) > 0 {
-		args = append(args, "--include", listString(params.Include))
-	}
-	if len(params.From) > 0 {
-		args = append(args, "--from", listString(params.From))
-	}
-	if len(params.To) > 0 {
-		args = append(args, "--to", listString(params.To))
-	}
-	if params.File != "" {
-		args = append(args, "--file", params.File)
-	} else {
-		return "", &InvalidParamsError{"schema plan push", "missing required flag --file"}
-	}
-	if params.Repo != "" {
-		args = append(args, "--repo", params.Repo)
-	}
-	if params.Pending {
-		args = append(args, "--pending")
-	} else {
-		args = append(args, "--auto-approve")
-	}
-	return stringVal(c.runCommand(ctx, args))
-}
-
-// SchemaPlanPush runs the `schema plan pull` command.
-func (c *Client) SchemaPlanPull(ctx context.Context, params *SchemaPlanPullParams) (string, error) {
-	args := []string{"schema", "plan", "pull"}
-	// Global flags
-	if params.ConfigURL != "" {
-		args = append(args, "--config", params.ConfigURL)
-	}
-	if params.Env != "" {
-		args = append(args, "--env", params.Env)
-	}
-	if params.Vars != nil {
-		args = append(args, params.Vars.AsArgs()...)
-	}
-	// Flags of the 'schema plan pull' sub-commands
-	if params.URL != "" {
-		args = append(args, "--url", params.URL)
-	} else {
-		return "", &InvalidParamsError{"schema plan pull", "missing required flag --url"}
-	}
-	return stringVal(c.runCommand(ctx, args))
 }
 
 // SchemaPlanLint runs the `schema plan lint` command.

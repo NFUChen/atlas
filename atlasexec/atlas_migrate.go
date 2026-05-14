@@ -92,20 +92,6 @@ type (
 		// but by Atlas, e.g. when committing or rolling back a transaction.
 		Error string `json:"Error,omitempty"`
 	}
-	// MigratePushParams are the parameters for the `migrate push` command.
-	MigratePushParams struct {
-		ConfigURL string
-		Env       string
-		Vars      VarArgs
-		Context   *RunContext
-		DevURL    string
-
-		Name        string
-		Tag         string
-		DirURL      string
-		DirFormat   string
-		LockTimeout string
-	}
 	// MigrateLintParams are the parameters for the `migrate lint` command.
 	MigrateLintParams struct {
 		ConfigURL string
@@ -222,49 +208,6 @@ type (
 		SQL       string      `json:"SQL,omitempty"`       // SQL that caused the last Error
 	}
 )
-
-// MigratePush runs the 'migrate push' command.
-func (c *Client) MigratePush(ctx context.Context, params *MigratePushParams) (string, error) {
-	args := []string{"migrate", "push"}
-	if params.DevURL != "" {
-		args = append(args, "--dev-url", params.DevURL)
-	}
-	if params.DirURL != "" {
-		args = append(args, "--dir", params.DirURL)
-	}
-	if params.DirFormat != "" {
-		args = append(args, "--dir-format", params.DirFormat)
-	}
-	if params.LockTimeout != "" {
-		args = append(args, "--lock-timeout", params.LockTimeout)
-	}
-	if params.Context != nil {
-		buf, err := json.Marshal(params.Context)
-		if err != nil {
-			return "", err
-		}
-		args = append(args, "--context", string(buf))
-	}
-	if params.ConfigURL != "" {
-		args = append(args, "--config", params.ConfigURL)
-	}
-	if params.Env != "" {
-		args = append(args, "--env", params.Env)
-	}
-	if params.Vars != nil {
-		args = append(args, params.Vars.AsArgs()...)
-	}
-	if params.Name == "" {
-		return "", errors.New("directory name cannot be empty")
-	}
-	if params.Tag != "" {
-		args = append(args, fmt.Sprintf("%s:%s", params.Name, params.Tag))
-	} else {
-		args = append(args, params.Name)
-	}
-	resp, err := stringVal(c.runCommand(ctx, args))
-	return strings.TrimSpace(resp), err
-}
 
 // MigrateApply runs the 'migrate apply' command.
 func (c *Client) MigrateApply(ctx context.Context, params *MigrateApplyParams) (*MigrateApply, error) {
