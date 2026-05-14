@@ -349,7 +349,7 @@ func TestAskForColumns_ReverseAmbiguousAskFunc(t *testing.T) {
 		&schema.AddColumn{C: addC},
 	}
 	opts := &schema.DiffOptions{
-		AskFunc: func(question string, options []string) (string, error) {
+		AskFunc: func(_ string, _ []string) (string, error) {
 			return "c", nil
 		},
 	}
