@@ -93,11 +93,11 @@ table "logs" {
 }
 
 -- 5.sql --
-       Table "script_column_array.logs"
+                  Table "script_column_array.logs"
  Column |           Type           | Collation | Nullable | Default
 --------+--------------------------+-----------+----------+---------
+ c      | character varying(100)[] |           | not null |
  a      | integer[]                |           | not null |
  b      | integer[]                |           | not null |
- c      | character varying(100)[] |           | not null |
  d      | point[]                  |           | not null |
 
