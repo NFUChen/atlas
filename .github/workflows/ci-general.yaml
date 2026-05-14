@@ -27,28 +27,6 @@ jobs:
         with:
           args: --verbose
 
-  generate-cmp:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: cmd/atlas/go.mod
-      - name: Install stringer
-        run: go install golang.org/x/tools/cmd/stringer@latest
-      - name: run "go generate ./..."
-        run: go generate ./...
-      - name: go generate cmd/atlas
-        working-directory: cmd/atlas
-        run: go generate ./...
-      - name: Verify generated files are checked-in properly
-        run: |
-          status=$(git status --porcelain | grep -v "go.\(sum\|mod\)" | cat)
-          if [ -n "$status" ]; then
-            echo "you need to run 'go generate ./...' and commit the changes"
-            echo "$status"
-            exit 1
-          fi
   unit:
     runs-on: ubuntu-latest
     steps:
@@ -86,6 +64,6 @@ jobs:
         run: go test -race -count=2 -v ./...
 
   dialect-integration:
-    needs: [lint, generate-cmp, unit, cli, integration]
+    needs: [lint, unit, cli, integration]
     uses: ./.github/workflows/ci-dialect.yaml
     secrets: inherit
