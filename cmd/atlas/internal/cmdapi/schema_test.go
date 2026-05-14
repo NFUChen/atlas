@@ -1119,6 +1119,35 @@ func TestSchema_Clean(t *testing.T) {
 	require.NoError(t, c.Driver.CheckClean(context.Background(), nil))
 }
 
+func TestSchema_CleanDryRun(t *testing.T) {
+	var (
+		u      = fmt.Sprintf("sqlite://file:%s?cache=shared&_fk=1", filepath.Join(t.TempDir(), "test.db"))
+		c, err = sqlclient.Open(context.Background(), u)
+	)
+	require.NoError(t, err)
+
+	// Apply migrations to seed the database.
+	_, err = runCmd(migrateApplyCmd(), "--dir", "file://testdata/sqlite", "--url", u)
+	require.NoError(t, err)
+
+	// Run clean with --dry-run and verify output contains DROP SQL.
+	s, err := runCmd(schemaCleanCmd(), "--url", u, "--dry-run")
+	require.NoError(t, err)
+	require.Contains(t, s, "DROP")
+
+	// Verify the database is NOT clean (tables still exist).
+	require.Error(t, c.Driver.CheckClean(context.Background(), nil))
+}
+
+func TestSchema_InspectHCL(t *testing.T) {
+	u := openSQLite(t, "create table t (c int);")
+	s, err := runCmd(schemaInspectCmd(), "--url", u, "--format", "{{ hcl . }}")
+	require.NoError(t, err)
+	require.Contains(t, s, "table")
+	require.Contains(t, s, "\"t\"")
+	require.Contains(t, s, "\"c\"")
+}
+
 func assertDir(t *testing.T, dir string, expected map[string]string) {
 	act := make(map[string]string)
 	files, err := os.ReadDir(dir)

@@ -773,8 +773,8 @@ var (
 		"write": func(...any) (string, error) {
 			return "", cmdext.UnsupportedErr("\n'atlas schema inspect' with 'write' function")
 		},
-		"hcl": func(...any) (string, error) {
-			return "", cmdext.UnsupportedErr("\n'atlas schema inspect' with 'hcl' function")
+		"hcl": func(report *SchemaInspect, _ ...string) (string, error) {
+			return report.MarshalHCL()
 		},
 	}
 

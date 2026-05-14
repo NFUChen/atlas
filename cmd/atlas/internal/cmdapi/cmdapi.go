@@ -637,8 +637,8 @@ func init() {
 		unsupportedCommand("migrate", "checkpoint"),
 		unsupportedCommand("migrate", "down"),
 		unsupportedCommand("migrate", "rebase"),
-		unsupportedCommand("migrate", "rm"),
-		unsupportedCommand("migrate", "edit"),
+		migrateRmCmd(),
+		migrateEditCmd(),
 		unsupportedCommand("migrate", "push"),
 		unsupportedCommand("migrate", "test"),
 	)
@@ -755,9 +755,6 @@ func migrateLintRun(cmd *cobra.Command, _ []string, flags migrateLintFlags, env 
 }
 
 func migrateDiffRun(cmd *cobra.Command, args []string, flags migrateDiffFlags, env *Env) error {
-	if flags.dryRun {
-		return errors.New("'--dry-run' is not supported in the community version")
-	}
 	ctx := cmd.Context()
 	dev, err := sqlclient.Open(ctx, flags.devURL)
 	if err != nil {
@@ -847,6 +844,17 @@ func migrateDiffRun(cmd *cobra.Command, args []string, flags migrateDiffFlags, e
 		return fmt.Errorf("dev database is not clean (%s). Add a schema to the URL to limit the scope of the connection", cerr.Reason)
 	case err != nil:
 		return maskNoPlan(cmd, err)
+	case flags.dryRun:
+		files, err := f.Format(plan)
+		if err != nil {
+			return err
+		}
+		for _, file := range files {
+			if _, err := cmd.OutOrStdout().Write(file.Bytes()); err != nil {
+				return err
+			}
+		}
+		return nil
 	default:
 		return pl.WritePlan(plan)
 	}
@@ -976,18 +984,22 @@ func schemaApplyRun(cmd *cobra.Command, flags schemaApplyFlags, env *Env) error 
 
 // applySchemaClean is the community-version of the 'atlas schema clean' handler.
 func applySchemaClean(cmd *cobra.Command, client *sqlclient.Client, drop []schema.Change, flags schemaCleanFlags) error {
-	if flags.dryRun {
-		return AbortErrorf("%s", unsupportedMessage("schema", "clean --dry-run"))
-	}
-	if flags.logFormat != "" {
-		return AbortErrorf("%s", unsupportedMessage("schema", "clean --format"))
-	}
 	if len(drop) == 0 {
 		cmd.Println("Nothing to drop")
 		return nil
 	}
-	if err := summary(cmd, client, drop, cmdlog.SchemaPlanTemplate); err != nil {
+	format := cmdlog.SchemaPlanTemplate
+	if v := flags.logFormat; v != "" {
+		var err error
+		if format, err = template.New("format").Funcs(cmdlog.ApplyTemplateFuncs).Parse(v); err != nil {
+			return fmt.Errorf("parse log format: %w", err)
+		}
+	}
+	if err := summary(cmd, client, drop, format); err != nil {
 		return err
+	}
+	if flags.dryRun {
+		return nil
 	}
 	if flags.autoApprove || promptUser(cmd) {
 		if err := client.ApplyChanges(cmd.Context(), drop); err != nil {

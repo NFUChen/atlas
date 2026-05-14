@@ -216,7 +216,6 @@ an HCL, SQL, or ORM schema. See: https://atlasgo.io/versioned/diff`,
 	cmd.Flags().StringVar(&flags.qualifier, flagQualifier, "", "qualify tables with custom qualifier when working on a single schema")
 	cmd.Flags().BoolVarP(&flags.edit, flagEdit, "", false, "edit the generated migration file(s)")
 	cmd.Flags().BoolVar(&flags.dryRun, flagDryRun, false, "print the generated file to stdout instead of writing it to the migration directory")
-	cobra.CheckErr(cmd.Flags().MarkHidden(flagDryRun))
 	cmd.MarkFlagsMutuallyExclusive(flagEdit, flagDryRun)
 	cobra.CheckErr(cmd.MarkFlagRequired(flagTo))
 	cobra.CheckErr(cmd.MarkFlagRequired(flagDevURL))
@@ -552,6 +551,144 @@ func migrateNewRun(cmd *cobra.Command, args []string, flags migrateNewFlags) err
 		name = args[0]
 	}
 	return migrate.NewPlanner(nil, dir, migrate.PlanFormat(f)).WritePlan(&migrate.Plan{Name: name})
+}
+
+type migrateRmFlags struct {
+	dirURL, dirFormat string
+}
+
+// migrateRmCmd represents the 'atlas migrate rm' subcommand.
+func migrateRmCmd() *cobra.Command {
+	var (
+		flags migrateRmFlags
+		cmd   = &cobra.Command{
+			Use:   "rm [flags] <version>",
+			Short: "Remove a migration file from the migration directory.",
+			Long: `'atlas migrate rm' removes a migration file from the migration directory and
+updates the atlas.sum file accordingly.`,
+			Example: `  atlas migrate rm 20060102150405
+  atlas migrate rm 20060102150405 --dir "file://migrations"`,
+			Args: cobra.ExactArgs(1),
+			PreRunE: func(cmd *cobra.Command, _ []string) error {
+				if err := migrateFlagsFromConfig(cmd); err != nil {
+					return err
+				}
+				return dirFormatBC(flags.dirFormat, &flags.dirURL)
+			},
+			RunE: RunE(func(cmd *cobra.Command, args []string) error {
+				return migrateRmRun(cmd, args, flags)
+			}),
+		}
+	)
+	cmd.Flags().SortFlags = false
+	addFlagDirURL(cmd.Flags(), &flags.dirURL)
+	addFlagDirFormat(cmd.Flags(), &flags.dirFormat)
+	return cmd
+}
+
+func migrateRmRun(cmd *cobra.Command, args []string, flags migrateRmFlags) error {
+	dir, err := cmdmigrate.Dir(cmd.Context(), flags.dirURL, false)
+	if err != nil {
+		return err
+	}
+	l, ok := dir.(*migrate.LocalDir)
+	if !ok {
+		return fmt.Errorf("migrate rm supports only local directories, but got: %T", dir)
+	}
+	files, err := l.Files()
+	if err != nil {
+		return err
+	}
+	version := args[0]
+	var removed int
+	for _, f := range files {
+		if strings.HasPrefix(f.Name(), version) {
+			if err := os.Remove(filepath.Join(l.Path(), f.Name())); err != nil {
+				return err
+			}
+			removed++
+			cmd.Printf("Removed: %s\n", f.Name())
+		}
+	}
+	if removed == 0 {
+		return fmt.Errorf("no migration file found with version %q", version)
+	}
+	sum, err := l.Checksum()
+	if err != nil {
+		return err
+	}
+	return migrate.WriteSumFile(l, sum)
+}
+
+type migrateEditFlags struct {
+	dirURL, dirFormat string
+}
+
+// migrateEditCmd represents the 'atlas migrate edit' subcommand.
+func migrateEditCmd() *cobra.Command {
+	var (
+		flags migrateEditFlags
+		cmd   = &cobra.Command{
+			Use:   "edit [flags] <version>",
+			Short: "Edit a migration file and recalculate the directory integrity hash.",
+			Long: `'atlas migrate edit' opens a migration file in the user's editor ($EDITOR)
+and recalculates the atlas.sum file after the file is saved.`,
+			Example: `  atlas migrate edit 20060102150405
+  atlas migrate edit 20060102150405 --dir "file://migrations"`,
+			Args: cobra.ExactArgs(1),
+			PreRunE: func(cmd *cobra.Command, _ []string) error {
+				if err := migrateFlagsFromConfig(cmd); err != nil {
+					return err
+				}
+				return dirFormatBC(flags.dirFormat, &flags.dirURL)
+			},
+			RunE: RunE(func(cmd *cobra.Command, args []string) error {
+				return migrateEditRun(cmd, args, flags)
+			}),
+		}
+	)
+	cmd.Flags().SortFlags = false
+	addFlagDirURL(cmd.Flags(), &flags.dirURL)
+	addFlagDirFormat(cmd.Flags(), &flags.dirFormat)
+	return cmd
+}
+
+func migrateEditRun(cmd *cobra.Command, args []string, flags migrateEditFlags) error {
+	dir, err := cmdmigrate.Dir(cmd.Context(), flags.dirURL, false)
+	if err != nil {
+		return err
+	}
+	l, ok := dir.(*migrate.LocalDir)
+	if !ok {
+		return fmt.Errorf("migrate edit supports only local directories, but got: %T", dir)
+	}
+	files, err := l.Files()
+	if err != nil {
+		return err
+	}
+	version := args[0]
+	var found migrate.File
+	for _, f := range files {
+		if strings.HasPrefix(f.Name(), version) {
+			found = f
+			break
+		}
+	}
+	if found == nil {
+		return fmt.Errorf("no migration file found with version %q", version)
+	}
+	edited, err := edit(found.Name(), found.Bytes())
+	if err != nil {
+		return err
+	}
+	if err := l.WriteFile(found.Name(), edited); err != nil {
+		return err
+	}
+	sum, err := l.Checksum()
+	if err != nil {
+		return err
+	}
+	return migrate.WriteSumFile(l, sum)
 }
 
 type migrateSetFlags struct {

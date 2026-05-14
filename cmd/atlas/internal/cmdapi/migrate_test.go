@@ -1023,6 +1023,24 @@ func TestMigrate_Diff(t *testing.T) {
 		require.Equal(t, "CREATE TABLE `t` (`c` int NULL)", string(files[0].Bytes()))
 	})
 
+	t.Run("DryRun", func(t *testing.T) {
+		p := t.TempDir()
+		s, err := runCmd(
+			migrateDiffCmd(),
+			"name",
+			"--dry-run",
+			"--dir", "file://"+p,
+			"--dev-url", openSQLite(t, ""),
+			"--to", to,
+		)
+		require.NoError(t, err)
+		require.Contains(t, s, "CREATE TABLE")
+		// Verify no files were written to the directory.
+		files, err := os.ReadDir(p)
+		require.NoError(t, err)
+		require.Empty(t, files)
+	})
+
 	t.Run("ProjectFile", func(t *testing.T) {
 		p := t.TempDir()
 		h := `
@@ -1796,4 +1814,87 @@ func sed(t *testing.T, r, p string) {
 
 func lines(f migrate.File) []string {
 	return strings.Split(strings.TrimSpace(string(f.Bytes())), "\n")
+}
+
+func TestMigrate_Rm(t *testing.T) {
+	p := t.TempDir()
+	to := hclURL(t)
+
+	// Create two migration files.
+	_, err := runCmd(
+		migrateDiffCmd(),
+		"first",
+		"--dir", "file://"+p,
+		"--dev-url", openSQLite(t, ""),
+		"--to", to,
+	)
+	require.NoError(t, err)
+
+	// Get the version prefix from the created file.
+	d, err := migrate.NewLocalDir(p)
+	require.NoError(t, err)
+	files, err := d.Files()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	version := strings.SplitN(files[0].Name(), "_", 2)[0]
+
+	// Remove the migration file by version.
+	s, err := runCmd(migrateRmCmd(), version, "--dir", "file://"+p)
+	require.NoError(t, err)
+	require.Contains(t, s, "Removed:")
+
+	// Verify the file was removed and only atlas.sum remains.
+	entries, err := os.ReadDir(p)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "atlas.sum", entries[0].Name())
+
+	// Trying to remove a non-existent version should fail.
+	_, err = runCmd(migrateRmCmd(), "99999999999999", "--dir", "file://"+p)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no migration file found")
+}
+
+func TestMigrate_Edit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+	p := t.TempDir()
+	to := hclURL(t)
+
+	// Create a migration file.
+	_, err := runCmd(
+		migrateDiffCmd(),
+		"first",
+		"--dir", "file://"+p,
+		"--dev-url", openSQLite(t, ""),
+		"--to", to,
+	)
+	require.NoError(t, err)
+
+	// Get the version prefix.
+	d, err := migrate.NewLocalDir(p)
+	require.NoError(t, err)
+	files, err := d.Files()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	version := strings.SplitN(files[0].Name(), "_", 2)[0]
+	origContent := string(files[0].Bytes())
+
+	// Edit the migration file using a simple editor command.
+	t.Setenv("EDITOR", "echo '-- edited by test' >>")
+	_, err = runCmd(migrateEditCmd(), version, "--dir", "file://"+p)
+	require.NoError(t, err)
+
+	// Verify the file was modified.
+	files, err = d.Files()
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	newContent := string(files[0].Bytes())
+	require.Contains(t, newContent, origContent)
+	require.Contains(t, newContent, "-- edited by test")
+
+	// Verify atlas.sum was updated (no validation error).
+	_, err = runCmd(migrateValidateCmd(), "--dir", "file://"+p)
+	require.NoError(t, err)
 }
